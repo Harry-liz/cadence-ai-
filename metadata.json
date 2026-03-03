@@ -1,0 +1,5 @@
+{
+  "name": "Cadence AI",
+  "description": "Your personal shopping and dining companion. Get personalized restaurant recommendations and fashion style advice using AI.",
+  "requestFramePermissions": ["camera"]
+}

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cadence AI - Mobile Preview</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 20px;
+    }
+    
+    .phone-frame {
+      width: 375px;
+      height: 812px;
+      background: #1a1a1a;
+      border-radius: 40px;
+      padding: 12px;
+      box-shadow: 0 50px 100px rgba(0, 0, 0, 0.5);
+      position: relative;
+    }
+    
+    .phone-notch {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 150px;
+      height: 30px;
+      background: #1a1a1a;
+      border-radius: 0 0 20px 20px;
+      z-index: 10;
+    }
+    
+    .phone-screen {
+      width: 100%;
+      height: 100%;
+      background: white;
+      border-radius: 32px;
+      overflow: hidden;
+      position: relative;
+    }
+    
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+    
+    .info {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      color: white;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 12px 20px;
+      border-radius: 12px;
+      backdrop-filter: blur(10px);
+      font-size: 14px;
+    }
+    
+    .info strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 16px;
+    }
+    
+    @media (max-width: 768px) {
+      .phone-frame {
+        width: 100%;
+        height: 100vh;
+        border-radius: 0;
+        padding: 0;
+      }
+      
+      .phone-notch {
+        display: none;
+      }
+      
+      .phone-screen {
+        border-radius: 0;
+      }
+      
+      .info {
+        display: none;
+      }
+      
+      body {
+        padding: 0;
+        background: white;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="info">
+    <strong>📱 Mobile Preview</strong>
+    <span>iPhone 14 Pro (375×812)</span>
+  </div>
+  
+  <div class="phone-frame">
+    <div class="phone-notch"></div>
+    <div class="phone-screen">
+      <iframe src="http://localhost:3004" title="Cadence AI Mobile Preview"></iframe>
+    </div>
+  </div>
+</body>
+</html>
