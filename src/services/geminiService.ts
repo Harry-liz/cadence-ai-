@@ -7,7 +7,7 @@ async function callOpenRouter(
   messages: Array<{ role: string; content: MessageContent }>,
   jsonMode = false
 ): Promise<string> {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const res = await fetch("/api/chat", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${OPENROUTER_API_KEY}`,
