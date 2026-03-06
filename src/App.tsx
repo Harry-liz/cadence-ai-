@@ -21,17 +21,32 @@ import {
   Clock,
   X,
   ChevronRight,
-  Info
+  Info,
+  Gift,
+  CalendarCheck,
+  Receipt,
+  Coins,
+  Crown,
+  TrendingUp,
+  Timer,
+  Navigation,
+  Zap,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import {
   getDiningRecommendation, getStyleAdvice, getChatResponse,
-  getParkingResponse, getParkingStatus, makeReservation,
   getChatResponseStructured,
-  type Restaurant, type Deal, type ParkingLevel, type ParkingReservation,
+  getMemberProfile, postCheckin, getMemberCoupons,
+  getMemberTransactions, getMemberPointsHistory,
+  getEventItinerary,
+  type Restaurant, type Deal,
   type StructuredChatResponse,
+  type MemberProfile, type Coupon, type Transaction, type PointsRecord, type CheckinResult,
+  type EventItinerary,
 } from './services/geminiService';
+// 停车助手功能已停用：getParkingResponse, getParkingStatus, makeReservation
+// type ParkingLevel, type ParkingReservation
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -50,7 +65,9 @@ function resolveRestaurantImage(src: string) {
   return src;
 }
 
-type Mode = 'home' | 'chat' | 'dining' | 'style' | 'events' | 'parking';
+type Mode = 'home' | 'chat' | 'dining' | 'style' | 'events' | 'member'; // 'parking' 已停用
+
+type MemberSubPage = 'overview' | 'coupons' | 'transactions' | 'points';
 
 interface ChatMsg {
   role: 'user' | 'ai';
@@ -74,6 +91,7 @@ interface MallEvent {
   gift?: string;
   notes?: string;
   tags: string[];
+  scenes: string[];        // 适合哪些场景，用于 chip 筛选
   aiInsight: string;
   aiTips: string[];
   aiQuestions: string[];
@@ -85,6 +103,20 @@ function getEventStatus(event: MallEvent): 'future' | 'ongoing' | 'ended' {
   if (now < event.startDate) return 'future';
   if (now > event.endDate) return 'ended';
   return 'ongoing';
+}
+
+function getEventCountdown(event: MallEvent): string {
+  const now = new Date();
+  const status = getEventStatus(event);
+  if (status === 'ended') return '已结束';
+  const target = status === 'future' ? event.startDate : event.endDate;
+  const diff = target.getTime() - now.getTime();
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  if (status === 'future') {
+    return days > 0 ? `${days} 天后开幕` : `${hours} 小时后开始`;
+  }
+  return days > 0 ? `还剩 ${days} 天` : hours > 0 ? `还剩 ${hours} 小时` : '即将结束';
 }
 
 const MALL_EVENTS: MallEvent[] = [
@@ -103,10 +135,11 @@ const MALL_EVENTS: MallEvent[] = [
       'ta 是谁？现场揭晓！不见不散',
     ],
     tags: ['限时快闪', '限量周边', '明星活动'],
+    scenes: ['两个人约会', '朋友聚会', '自己逛逛'],
     ticketInfo: '免费入场',
-    aiInsight: '今天还在！亚洲顶流女星快闪店，只到3月8日，想去的话今晚就是好时机。',
-    aiTips: ['活动只到3月8日，时间紧迫，建议尽快前往', '限量周边通常在活动中期就会售罄，早去早抢', '活动在L1层中庭，从主入口进来直走即可看到'],
-    aiQuestions: ['ta 是哪位明星？', '周边怎么购买？', '几点开放？'],
+    aiInsight: '今天还在！工作日下午人少，限量周边现在还有货，去的话今天是最好的时机。',
+    aiTips: ['限量周边通常活动中期就会售罄，越早去越好', '活动在 L1 中庭，从主入口进来直走即可看到', '活动只到 3 月 8 日，别拖到最后一天人挤人'],
+    aiQuestions: ['ta 是哪位明星？', '周边怎么购买？', '顺道推荐什么餐厅？'],
   },
   {
     id: '3',
@@ -120,13 +153,14 @@ const MALL_EVENTS: MallEvent[] = [
       '全天开放',
       '沉浸式光影体验',
       '互动艺术装置',
-      '适合亲子及艺术爱好者'
+      '适合亲子及艺术爱好者',
     ],
     tags: ['亲子出游', '情侣约会', '艺术爱好者'],
+    scenes: ['带小孩来玩', '两个人约会', '朋友聚会', '自己逛逛'],
     ticketInfo: '需购票入场',
-    aiInsight: '4月1日正式开幕！还有将近一个月，可以先关注官方购票渠道，早买早划算。',
-    aiTips: ['展览4月1日开幕，现在可提前关注官方购票渠道', '工作日下午 2-4 点是最佳时段，人流量约为周末的 1/3', '带小朋友来的话，光影互动区会是最大亮点'],
-    aiQuestions: ['怎么买票？', '停车方便吗？', '适合几岁的小孩？'],
+    aiInsight: '还有 26 天开幕，现在关注官方购票渠道可以抢早鸟票，节假日票通常提前一周售罄。',
+    aiTips: ['工作日下午 2-4 点人流量约为周末的 1/3，体验最佳', '带小朋友来光影互动区会是最大亮点', '建议提前在官方小程序购票，现场排队等候时间长'],
+    aiQuestions: ['怎么买票？', '适合几岁的小孩？', '帮我规划当天行程'],
   },
   {
     id: '1',
@@ -140,15 +174,16 @@ const MALL_EVENTS: MallEvent[] = [
       '14:50-15:00 入场签到',
       '15:00-15:10 老师讲解',
       '15:10-15:50 汤圆DIY制作环节',
-      '15:50-16:00 汤圆分享合影留念'
+      '15:50-16:00 汤圆分享合影留念',
     ],
-    gift: '活动结束额外获赠元宵节灯笼一个及客家围品牌代金券 (仅限现场参与会员赠送)',
-    notes: '此活动时长有限，请准时入场，迟到视为自动放弃活动名额，活动一经报名积分不退。',
+    gift: '活动结束额外获赠元宵节灯笼一个及客家围品牌代金券',
+    notes: '请准时入场，迟到视为自动放弃活动名额。',
     tags: ['家庭亲子', '传统节日', '免费参与'],
+    scenes: ['带小孩来玩', '朋友聚会'],
     ticketInfo: '会员免费，凭积分报名',
-    aiInsight: '这个活动已经结束了，不过同类节日手作活动会持续推出，关注公众号第一时间获取通知。',
-    aiTips: ['名额有限，建议今天就完成报名', '请务必提前 10 分钟到场签到，迟到视为放弃', '活动结束后可以在客家围用代金券继续享用美食'],
-    aiQuestions: ['还有名额吗？', '怎么报名？', '小朋友可以参加吗？'],
+    aiInsight: '这个活动已结束，同类节日手作活动会持续推出，下次来得及早报名。',
+    aiTips: ['关注中洲湾公众号，新活动第一时间通知', '类似亲子手工活动每个节日前后都会推出', '活动结束后可以在 L3 客家围用代金券继续用餐'],
+    aiQuestions: ['之后还有类似活动吗？', '客家围怎么预订？'],
   },
   {
     id: '2',
@@ -162,13 +197,14 @@ const MALL_EVENTS: MallEvent[] = [
       '14:50-15:00 入场签到',
       '15:00-15:20 老师讲解',
       '15:20-16:20 制作环节',
-      '16:20-16:30 合影留念'
+      '16:20-16:30 合影留念',
     ],
     gift: '额外获得马年新春DIY萌马帽一份',
-    notes: '此活动时长有限，请准时入场，迟到视为自动放弃活动名额，活动一经报名积分不退。',
+    notes: '请准时入场，迟到视为自动放弃活动名额。',
     tags: ['节日限定', '手工体验', '会员专属'],
-    aiInsight: '这个活动已经结束啦，不过同系列的节日手作活动会持续推出，敬请期待！',
-    aiTips: ['关注中洲湾公众号，新活动第一时间通知', '类似的亲子手工活动每个节日前后都会推出', '已参与的会员可以在个人中心查看活动记录'],
+    scenes: ['带小孩来玩', '朋友聚会', '两个人约会'],
+    aiInsight: '这个活动已结束，同系列节日手作活动会持续推出，敬请期待。',
+    aiTips: ['关注中洲湾公众号，新活动第一时间通知', '类似亲子手工活动每个节日前后都会推出'],
     aiQuestions: ['之后还有类似活动吗？', '我想了解其他活动'],
   },
 ];
@@ -206,48 +242,58 @@ export default function App() {
 
   // Events State
   const [selectedEvent, setSelectedEvent] = useState<MallEvent | null>(null);
+  const [eventScene, setEventScene] = useState('');
+  const [eventArriveTime, setEventArriveTime] = useState('');
+  const [eventItinerary, setEventItinerary] = useState<EventItinerary | null>(null);
+  const [itineraryLoading, setItineraryLoading] = useState(false);
 
-  // Parking State
-  const [parkingLevels, setParkingLevels] = useState<ParkingLevel[]>(() => getParkingStatus());
-  const [parkingHistory, setParkingHistory] = useState<{ role: 'user' | 'assistant'; text: string }[]>([]);
-  const [parkingInput, setParkingInput] = useState('');
-  const [parkingLoading, setParkingLoading] = useState(false);
-  const [parkingReservation, setParkingReservation] = useState<ParkingReservation | null>(null);
-  const [displayedText, setDisplayedText] = useState('');
-  const parkingChatRef = useRef<HTMLDivElement>(null);
-  const proactiveTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Member State
+  const [memberProfile, setMemberProfile] = useState<MemberProfile | null>(null);
+  const [memberCoupons, setMemberCoupons] = useState<Coupon[]>([]);
+  const [memberTransactions, setMemberTransactions] = useState<Transaction[]>([]);
+  const [memberPointsHistory, setMemberPointsHistory] = useState<PointsRecord[]>([]);
+  const [memberSubPage, setMemberSubPage] = useState<MemberSubPage>('overview');
+  const [memberLoading, setMemberLoading] = useState(false);
+  const [checkinResult, setCheckinResult] = useState<CheckinResult | null>(null);
+  const [checkinAnimating, setCheckinAnimating] = useState(false);
+
+  // 停车助手功能已停用
+  // const [parkingLevels, setParkingLevels] = useState<ParkingLevel[]>([]);
+  // const [parkingHistory, setParkingHistory] = useState<{ role: 'user' | 'assistant'; text: string }[]>([]);
+  // const [parkingInput, setParkingInput] = useState('');
+  // const [parkingLoading, setParkingLoading] = useState(false);
+  // const [parkingReservation, setParkingReservation] = useState<ParkingReservation | null>(null);
+  // const [displayedText, setDisplayedText] = useState('');
+  // const parkingChatRef = useRef<HTMLDivElement>(null);
+  // const proactiveTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [centerEventIndex, setCenterEventIndex] = useState(0);
   const eventsScrollRef = useRef<HTMLDivElement>(null);
   const restaurantsScrollRef = useRef<HTMLDivElement>(null);
 
   const handleEventScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const container = e.currentTarget;
-    const centerX = container.scrollLeft + container.clientWidth / 2;
-
-    let closestIndex = 0;
-    let minDist = Infinity;
-
-    Array.from(container.children).forEach((child, i) => {
-      const el = child as HTMLElement;
-      const cardCenter = el.offsetLeft + el.offsetWidth / 2;
-      const dist = Math.abs(cardCenter - centerX);
-      if (dist < minDist) {
-        minDist = dist;
-        closestIndex = i;
-      }
-    });
-
-    setCenterEventIndex(closestIndex);
+    const el = e.currentTarget;
+    const cardSlotWidth = el.offsetWidth * 0.78 + 16;
+    const idx = Math.round(el.scrollLeft / cardSlotWidth);
+    setCenterEventIndex(Math.max(0, Math.min(idx, MALL_EVENTS.length - 1)));
   };
 
-  const scrollEvents = (direction: 'left' | 'right') => {
-    if (eventsScrollRef.current) {
-      const scrollAmount = 300;
-      eventsScrollRef.current.scrollBy({
-        left: direction === 'left' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth'
-      });
+  const handleCarouselCardClick = (index: number) => {
+    if (index === centerEventIndex) {
+      const ev = MALL_EVENTS[index];
+      setSelectedEvent(ev);
+      setEventScene('');
+      setEventItinerary(null);
+    } else {
+      const el = eventsScrollRef.current;
+      if (el) {
+        const cardSlotWidth = el.offsetWidth * 0.78 + 16;
+        el.scrollTo({ left: index * cardSlotWidth, behavior: 'smooth' });
+      }
     }
+  };
+
+  const scrollEvents = (_direction: 'left' | 'right') => {
+    // unused; scroll is handled by handleCarouselCardClick
   };
 
   const startCamera = async () => {
@@ -346,84 +392,7 @@ export default function App() {
     }
   };
 
-  // Streaming text helper for parking AI
-  const streamText = (text: string) => {
-    setDisplayedText('');
-    let i = 0;
-    const interval = setInterval(() => {
-      setDisplayedText(text.slice(0, i + 1));
-      i++;
-      if (i >= text.length) clearInterval(interval);
-    }, 18);
-  };
-
-  // 预约成功后主动询问
-  useEffect(() => {
-    proactiveTimersRef.current.forEach(t => clearTimeout(t));
-    proactiveTimersRef.current = [];
-
-    if (!parkingReservation) return;
-
-    const spot = parkingReservation.spot;
-    const expiryTime = `${parkingReservation.validUntil.getHours()}:${String(parkingReservation.validUntil.getMinutes()).padStart(2, '0')}`;
-
-    // 30秒后主动关心（生产环境建议改为 2 * 60 * 1000）
-    const t1 = setTimeout(() => {
-      const msg = `你现在在路上了吗？😊 ${spot} 还给你保留着，告诉我大概还有多久到，我帮你留意着。`;
-      setParkingHistory(prev => [...prev, { role: 'assistant', text: msg }]);
-      streamText(msg);
-      setTimeout(() => parkingChatRef.current?.scrollTo({ top: 9999, behavior: 'smooth' }), 100);
-    }, 30 * 1000);
-
-    // 预约到期前5分钟提醒（15分钟后，生产环境建议 15 * 60 * 1000）
-    const t2 = setTimeout(() => {
-      const msg = `⏰ 提醒一下，${spot} 的预约快到期啦（有效至 ${expiryTime}），你快到了吗？需要我帮你重新预约一个吗？`;
-      setParkingHistory(prev => [...prev, { role: 'assistant', text: msg }]);
-      streamText(msg);
-      setTimeout(() => parkingChatRef.current?.scrollTo({ top: 9999, behavior: 'smooth' }), 100);
-    }, 15 * 60 * 1000);
-
-    proactiveTimersRef.current = [t1, t2];
-
-    return () => {
-      proactiveTimersRef.current.forEach(t => clearTimeout(t));
-    };
-  }, [parkingReservation]);
-
-  const handleParkingSubmit = async (e: React.FormEvent | null, overrideMsg?: string) => {
-    if (e) e.preventDefault();
-    const msg = overrideMsg ?? parkingInput.trim();
-    if (!msg) return;
-
-    setParkingInput('');
-    const newHistory = [...parkingHistory, { role: 'user' as const, text: msg }];
-    setParkingHistory(newHistory);
-    setParkingLoading(true);
-
-    try {
-      const rawReply = await getParkingResponse(msg, parkingHistory, parkingLevels);
-
-      // 检测预定指令
-      const reserveMatch = rawReply.match(/\[RESERVE:(B\d)\]/);
-      const cleanReply = rawReply.replace(/\[RESERVE:B\d\]/g, '').trim();
-
-      setParkingHistory([...newHistory, { role: 'assistant', text: cleanReply }]);
-      streamText(cleanReply);
-
-      if (reserveMatch) {
-        const res = makeReservation(reserveMatch[1]);
-        setParkingReservation(res);
-      }
-
-      // 刷新停车数据
-      setParkingLevels(getParkingStatus());
-      setTimeout(() => parkingChatRef.current?.scrollTo({ top: 9999, behavior: 'smooth' }), 100);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setParkingLoading(false);
-    }
-  };
+  // 停车助手功能已停用 ── streamText, proactive timers, handleParkingSubmit
 
   const sendChatMessage = async (msg: string) => {
     if (!msg.trim()) return;
@@ -474,14 +443,61 @@ export default function App() {
     setMode(newMode);
     setResult(null);
     if (newMode === 'style') startCamera();
-    if (newMode === 'parking' && parkingHistory.length === 0) {
-      // 主动打招呼
-      const levels = getParkingStatus();
-      setParkingLevels(levels);
-      const best = [...levels].sort((a, b) => b.available - a.available)[0];
-      const greeting = `你好！我是停车助手 Cadence Park 🅿️\n\n当前最推荐停 ${best.name}，还有 ${best.available} 个空位（${best.tag}）。\n\n你现在在路上了吗？告诉我大概还有多久到，我帮你把车位留好 😊`;
-      setParkingHistory([{ role: 'assistant', text: greeting }]);
-      streamText(greeting);
+    if (newMode === 'member' && !memberProfile) {
+      setMemberLoading(true);
+      getMemberProfile().then(p => setMemberProfile(p)).finally(() => setMemberLoading(false));
+    }
+
+    // 停车助手功能已停用
+    // if (newMode === 'parking' && parkingHistory.length === 0) { ... }
+  };
+
+  const handleGenerateItinerary = async () => {
+    if (!selectedEvent || !eventScene) return;
+    setItineraryLoading(true);
+    setEventItinerary(null);
+    try {
+      const result = await getEventItinerary({
+        eventId: selectedEvent.id,
+        eventTitle: selectedEvent.title,
+        eventLocation: selectedEvent.location,
+        eventTime: selectedEvent.time,
+        eventDetails: selectedEvent.details,
+        scene: eventScene,
+        arriveTime: eventArriveTime || '下午2点',
+      });
+      setEventItinerary(result);
+    } catch {
+      setEventItinerary({ steps: [], tip: '暂时无法生成行程，请稍后再试' });
+    } finally {
+      setItineraryLoading(false);
+    }
+  };
+
+  const handleCheckin = async () => {
+    if (checkinAnimating) return;
+    setCheckinAnimating(true);
+    try {
+      const result = await postCheckin();
+      setCheckinResult(result);
+      if (result.success && memberProfile) {
+        setMemberProfile({ ...memberProfile, points: result.newTotal, checkedInToday: true, checkinStreak: result.streak });
+      }
+    } finally {
+      setTimeout(() => setCheckinAnimating(false), 1500);
+    }
+  };
+
+  const handleLoadMemberTab = async (tab: MemberSubPage) => {
+    setMemberSubPage(tab);
+    if (tab === 'coupons' && memberCoupons.length === 0) {
+      getMemberCoupons().then(setMemberCoupons);
+    }
+    if (tab === 'transactions' && memberTransactions.length === 0) {
+      getMemberTransactions().then(setMemberTransactions);
+    }
+    if (tab === 'points' && memberPointsHistory.length === 0) {
+      getMemberPointsHistory().then(setMemberPointsHistory);
     }
   };
 
@@ -660,7 +676,8 @@ export default function App() {
                     { mode: 'dining' as const, emoji: '🍽️', title: '美食推荐', desc: 'AI 帮你选今天吃什么' },
                     { mode: 'events' as const, emoji: '🎪', title: '活动一览', desc: '最新展览与互动活动' },
                     { mode: 'style' as const, emoji: '👗', title: '穿搭建议', desc: '拍张照，AI 来搭配' },
-                    { mode: 'parking' as const, emoji: '🅿️', title: '停车助手', desc: 'AI 帮你找车位、预留停车' },
+                    { mode: 'member' as const, emoji: '💎', title: '会员中心', desc: '积分、优惠券与专属权益' },
+                    // { mode: 'parking' as const, emoji: '🅿️', title: '停车助手', desc: 'AI 帮你找车位、预留停车' },  // 已停用
                   ].map((item) => (
                     <button
                       key={item.mode}
@@ -746,7 +763,7 @@ export default function App() {
                         <motion.button
                           initial={{ opacity: 0, y: 4 }}
                           animate={{ opacity: 1, y: 0 }}
-                          onClick={() => handleModeChange(msg.action!)}
+                          onClick={() => handleModeChange(msg.action as Mode)}
                           className="mt-2 flex items-center gap-1.5 px-3.5 py-2 bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all"
                         >
                           <Sparkles size={12} />
@@ -1191,160 +1208,174 @@ export default function App() {
           )}
 
           {mode === 'events' && (
-            <motion.div 
+            <motion.div
               key="events"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="space-y-5"
+              className="pb-6"
             >
-              <div className="space-y-1">
+              {/* ── Header ── */}
+              <div className="px-5 mb-5 space-y-1">
                 <h3 className="text-2xl font-bold tracking-tight">精彩活动</h3>
                 <p className="text-[#1A1A1A]/40 text-sm">探索中洲湾 C Future City 的无限可能</p>
               </div>
 
-              {/* Center-focused Carousel with Snap Scrolling */}
-              <div className="relative -mx-6">
-                <div 
-                  ref={eventsScrollRef}
-                  onScroll={handleEventScroll}
-                  className="flex gap-4 overflow-x-auto snap-x snap-mandatory no-scrollbar px-[calc(50vw-112px)] py-4"
-                >
-                  {MALL_EVENTS.map((event, index) => {
-                    const isCenterCard = index === centerEventIndex;
-                    return (
-                      <motion.div
-                        key={event.id}
-                        onClick={() => setSelectedEvent(event)}
-                        animate={{ scale: isCenterCard ? 1 : 0.85, opacity: isCenterCard ? 1 : 0.5 }}
-                        transition={{ duration: 0.2, ease: "easeOut" }}
-                        className={cn(
-                          "relative flex-shrink-0 w-56 aspect-[9/16] rounded-3xl overflow-hidden cursor-pointer snap-center",
-                          isCenterCard ? "shadow-2xl" : "shadow-md"
-                        )}
-                      >
-                        <img src={event.image} alt={event.title} className="w-full h-full object-cover" />
-                        <div className={cn(
-                          "absolute inset-0 bg-gradient-to-t transition-all duration-300",
-                          isCenterCard ? "from-black/90 via-black/20 to-transparent" : "from-black/80 via-black/60 to-black/40"
-                        )} />
-                        <div className="absolute top-4 left-4">
-                          <span className={cn(
-                            "px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider backdrop-blur-md border",
-                            getEventStatus(event) === 'future' && "bg-indigo-500/80 text-white border-indigo-400/50",
-                            getEventStatus(event) === 'ongoing' && "bg-emerald-500/80 text-white border-emerald-400/50",
-                            getEventStatus(event) === 'ended' && "bg-black/40 text-white/60 border-white/10"
-                          )}>
-                            {getEventStatus(event) === 'future' ? '即将开始' : getEventStatus(event) === 'ongoing' ? '进行中' : '已结束'}
-                          </span>
-                        </div>
-                        <div className="absolute bottom-0 left-0 right-0 p-4 space-y-2">
-                          <h4 className="text-white text-sm font-bold leading-tight line-clamp-2">{event.title}</h4>
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-1 text-white/60 text-[10px]">
-                              <Clock size={10} /><span>{event.time.split(' ')[0]}</span>
-                            </div>
-                            {event.ticketInfo && (
-                              <span className="text-[9px] text-white/50 font-medium">{event.ticketInfo}</span>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap gap-1">
-                            {event.tags.slice(0, 2).map(tag => (
-                              <span key={tag} className="text-[9px] text-white/70 bg-white/15 backdrop-blur-sm rounded-md px-1.5 py-0.5 font-medium">{tag}</span>
-                            ))}
-                          </div>
-                        </div>
-                      </motion.div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* AI 洞察卡 — 跟随轮播切换 */}
-              <AnimatePresence mode="wait">
-                {MALL_EVENTS[centerEventIndex] && (() => {
-                  const ev = MALL_EVENTS[centerEventIndex];
-                  const evStatus = getEventStatus(ev);
+              {/* ── Carousel ── */}
+              <div
+                ref={eventsScrollRef}
+                onScroll={handleEventScroll}
+                className="flex gap-4 overflow-x-auto snap-x snap-mandatory pb-3 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                style={{ paddingLeft: 'calc(11%)' }}
+              >
+                {MALL_EVENTS.map((event, i) => {
+                  const dist = Math.abs(i - centerEventIndex);
+                  const isCenter = dist === 0;
+                  const status = getEventStatus(event);
                   return (
                     <motion.div
-                      key={ev.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      transition={{ duration: 0.25 }}
-                      className="rounded-3xl overflow-hidden border border-black/8 shadow-sm bg-white"
+                      key={event.id}
+                      animate={{
+                        scale: isCenter ? 1 : 0.88,
+                        opacity: isCenter ? 1 : dist === 1 ? 0.5 : 0.28,
+                        filter: isCenter ? 'blur(0px)' : 'blur(2px)',
+                      }}
+                      transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+                      className="w-[78%] flex-shrink-0 snap-center cursor-pointer"
+                      onClick={() => handleCarouselCardClick(i)}
                     >
-                      {/* 助手说 */}
                       <div className={cn(
-                        "px-5 pt-4 pb-3 flex items-start gap-3",
-                        evStatus === 'ongoing' ? "bg-emerald-50/60" :
-                        evStatus === 'future' ? "bg-indigo-50/60" : "bg-neutral-50"
+                        "rounded-3xl overflow-hidden bg-white",
+                        isCenter ? "shadow-[0_6px_28px_rgba(0,0,0,0.13)]" : "shadow-sm"
                       )}>
-                        <div className={cn(
-                          "w-8 h-8 rounded-2xl flex items-center justify-center flex-shrink-0 mt-0.5",
-                          evStatus === 'ongoing' ? "bg-emerald-100" :
-                          evStatus === 'future' ? "bg-indigo-100" : "bg-neutral-100"
-                        )}>
-                          <Sparkles size={14} className={cn(
-                            evStatus === 'ongoing' ? "text-emerald-600" :
-                            evStatus === 'future' ? "text-indigo-600" : "text-neutral-400"
-                          )} />
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-bold text-black/30 uppercase tracking-widest mb-1">Cadence 说</p>
-                          <p className="text-sm font-medium text-[#1A1A1A] leading-relaxed">{ev.aiInsight}</p>
-                        </div>
-                      </div>
-
-                      {/* 小贴士 */}
-                      <div className="px-5 py-3 space-y-2 border-t border-black/5">
-                        {ev.aiTips.map((tip, i) => (
-                          <div key={i} className="flex items-start gap-2.5">
-                            <span className="text-[10px] font-black text-black/20 mt-0.5 flex-shrink-0">{String(i + 1).padStart(2, '0')}</span>
-                            <p className="text-[12px] text-[#1A1A1A]/60 font-medium leading-snug">{tip}</p>
+                        {/* Image */}
+                        <div className="relative h-56 overflow-hidden">
+                          <img
+                            src={event.image}
+                            alt={event.title}
+                            className={cn("w-full h-full object-cover", status === 'ended' && "grayscale")}
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
+                          {/* Status badge */}
+                          <div className="absolute top-3 left-3">
+                            <span className={cn(
+                              "px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest backdrop-blur-md",
+                              status === 'ongoing' && "bg-emerald-500/85 text-white",
+                              status === 'future' && "bg-indigo-500/85 text-white",
+                              status === 'ended' && "bg-black/40 text-white/70"
+                            )}>
+                              {status === 'ongoing' ? '进行中' : status === 'future' ? '即将开始' : '已结束'}
+                            </span>
                           </div>
-                        ))}
-                      </div>
-
-                      {/* 快捷问题 + 操作按钮 */}
-                      <div className="px-5 pt-2 pb-4 space-y-3 border-t border-black/5">
-                        <div className="flex flex-wrap gap-1.5">
-                          {ev.aiQuestions.map(q => (
-                            <button
-                              key={q}
-                              onClick={() => { setMode('chat'); sendChatMessage(q); }}
-                              className={cn(
-                                "text-[11px] font-semibold px-3 py-1.5 rounded-full transition-all active:scale-95",
-                                evStatus === 'ongoing' ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100" :
-                                evStatus === 'future' ? "bg-indigo-50 text-indigo-700 hover:bg-indigo-100" :
-                                "bg-neutral-100 text-neutral-500 hover:bg-neutral-200"
-                              )}
-                            >
-                              {q}
-                            </button>
-                          ))}
-                        </div>
-                        <button
-                          onClick={() => evStatus !== 'ended' && setSelectedEvent(ev)}
-                          disabled={evStatus === 'ended'}
-                          className={cn(
-                            "w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-95",
-                            evStatus === 'ended'
-                              ? "bg-neutral-100 text-neutral-400 cursor-not-allowed"
-                              : evStatus === 'future'
-                              ? "bg-indigo-600 text-white shadow-lg shadow-indigo-200"
-                              : "bg-[#1A1A1A] text-white shadow-lg"
+                          {/* Countdown bottom-left */}
+                          <div className="absolute bottom-3 left-4">
+                            <span className={cn(
+                              "text-[11px] font-bold drop-shadow-sm",
+                              status === 'ongoing' && "text-emerald-300",
+                              status === 'future' && "text-indigo-200",
+                              status === 'ended' && "text-white/40"
+                            )}>
+                              {getEventCountdown(event)}
+                            </span>
+                          </div>
+                          {/* Tap hint bottom-right (center card only) */}
+                          {isCenter && (
+                            <div className="absolute bottom-3 right-4 flex items-center gap-1 text-white/60">
+                              <span className="text-[10px] font-medium">查看详情</span>
+                              <ChevronRight size={10} />
+                            </div>
                           )}
-                        >
-                          {evStatus === 'ended' ? '活动已结束' : evStatus === 'future' ? '立即报名 →' : '查看详情 →'}
-                        </button>
+                        </div>
+
+                        {/* Info */}
+                        <div className="p-4 space-y-2">
+                          <h4 className="text-[14px] font-bold text-[#1A1A1A] leading-snug line-clamp-2">
+                            {event.title}
+                          </h4>
+                          <div className="flex items-center gap-1.5 text-[#1A1A1A]/40">
+                            <Clock size={10} />
+                            <span className="text-[11px] truncate">{event.time}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[#1A1A1A]/40">
+                            <MapPin size={10} />
+                            <span className="text-[11px] truncate">{event.location.split(' ').slice(-1)[0]}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1 pt-0.5">
+                            {event.tags.slice(0, 2).map(tag => (
+                              <span key={tag} className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-black/5 text-black/40">{tag}</span>
+                            ))}
+                            {event.ticketInfo && (
+                              <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{event.ticketInfo}</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </motion.div>
                   );
-                })()}
+                })}
+                {/* 末尾占位，让最后一张卡片能滚到中心（flex 末尾 padding 被浏览器裁剪，用空 div 代替） */}
+                <div className="flex-shrink-0" style={{ width: 'calc(11% - 16px)' }} />
+              </div>
+
+              {/* ── Dot indicators ── */}
+              <div className="flex justify-center gap-1.5 mt-1.5">
+                {MALL_EVENTS.map((_, i) => (
+                  <div
+                    key={i}
+                    className={cn(
+                      "h-1.5 rounded-full transition-all duration-300",
+                      i === centerEventIndex ? "w-5 bg-[#1A1A1A]" : "w-1.5 bg-[#1A1A1A]/15"
+                    )}
+                  />
+                ))}
+              </div>
+
+              {/* ── AI Tips (switches with centerEventIndex) ── */}
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={`tips-${centerEventIndex}`}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  transition={{ duration: 0.2 }}
+                  className="px-5 mt-5 space-y-3"
+                >
+                  {(() => {
+                    const ev = MALL_EVENTS[centerEventIndex];
+                    const st = getEventStatus(ev);
+                    return (
+                      <>
+                        <div className={cn(
+                          "flex items-start gap-2.5 p-4 rounded-2xl",
+                          st === 'ongoing' ? "bg-emerald-50" : st === 'future' ? "bg-indigo-50" : "bg-neutral-100"
+                        )}>
+                          <Sparkles size={13} className={cn(
+                            "mt-0.5 flex-shrink-0",
+                            st === 'ongoing' ? "text-emerald-500" : st === 'future' ? "text-indigo-500" : "text-neutral-400"
+                          )} />
+                          <p className="text-[12px] font-medium text-[#1A1A1A]/65 leading-relaxed">{ev.aiInsight}</p>
+                        </div>
+
+                        {ev.aiTips.length > 0 && (
+                          <div className="space-y-2">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-black/25 px-0.5">Cadence 小贴士</p>
+                            {ev.aiTips.map((tip, ti) => (
+                              <div key={ti} className="flex items-start gap-2.5 px-3.5 py-3 bg-white rounded-xl border border-black/6 shadow-[0_1px_4px_rgba(0,0,0,0.04)]">
+                                <div className="w-5 h-5 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                  <span className="text-[10px]">💡</span>
+                                </div>
+                                <p className="text-[12px] text-[#1A1A1A]/60 leading-relaxed">{tip}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </motion.div>
               </AnimatePresence>
 
-              {/* Event Detail Modal */}
+              {/* ── Event Detail Modal ── */}
               <AnimatePresence>
                 {selectedEvent && (
                   <motion.div 
@@ -1353,8 +1384,8 @@ export default function App() {
                     exit={{ opacity: 0 }}
                     className="fixed inset-0 z-[100] bg-white flex flex-col"
                   >
-                    {/* Modal Header */}
-                    <div className="relative h-[40vh] overflow-hidden">
+                    {/* Hero Image */}
+                    <div className="relative h-[38vh] overflow-hidden flex-shrink-0">
                       <img 
                         src={selectedEvent.image} 
                         alt={selectedEvent.title}
@@ -1362,97 +1393,239 @@ export default function App() {
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-white via-transparent to-transparent" />
                       <button 
-                        onClick={() => setSelectedEvent(null)}
-                        className="absolute top-6 right-6 w-10 h-10 bg-black/20 backdrop-blur-xl rounded-full flex items-center justify-center text-white hover:bg-black/40 transition-colors"
+                        onClick={() => { setSelectedEvent(null); setEventItinerary(null); setEventScene(''); }}
+                        className="absolute top-6 right-6 w-10 h-10 bg-black/20 backdrop-blur-xl rounded-full flex items-center justify-center text-white"
                       >
                         <X size={20} />
                       </button>
+                      {/* Status badge */}
+                      <div className="absolute top-6 left-6">
+                        {(() => {
+                          const st = getEventStatus(selectedEvent);
+                          return (
+                            <span className={cn(
+                              "px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest backdrop-blur-md",
+                              st === 'future' && "bg-indigo-500/80 text-white",
+                              st === 'ongoing' && "bg-emerald-500/80 text-white",
+                              st === 'ended' && "bg-black/30 text-white/70"
+                            )}>
+                              {st === 'future' ? getEventCountdown(selectedEvent) : st === 'ongoing' ? getEventCountdown(selectedEvent) : '已结束'}
+                            </span>
+                          );
+                        })()}
+                      </div>
                     </div>
 
-                    {/* Modal Content */}
-                    <div className="flex-1 -mt-20 relative bg-white rounded-t-[3rem] p-8 space-y-8 overflow-y-auto">
-                      {(() => { const selStatus = getEventStatus(selectedEvent); return (<>
-                      <div className="space-y-4">
-                        <div className="flex items-center gap-2">
-                          <span className={cn(
-                            "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
-                            selStatus === 'future' && "bg-indigo-50 text-indigo-600",
-                            selStatus === 'ongoing' && "bg-emerald-50 text-emerald-600",
-                            selStatus === 'ended' && "bg-neutral-100 text-neutral-400"
-                          )}>
-                            {selStatus === 'future' && '未来活动'}
-                            {selStatus === 'ongoing' && '正在进行'}
-                            {selStatus === 'ended' && '活动已结束'}
-                          </span>
-                        </div>
-                        <h2 className="text-3xl font-bold tracking-tight leading-tight">{selectedEvent.title}</h2>
-                      </div>
-
-                      <div className="space-y-6">
-                        <div className="flex items-start gap-4">
-                          <div className="w-10 h-10 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-600 shrink-0">
-                            <Clock size={20} />
-                          </div>
-                          <div className="space-y-0.5">
-                            <p className="text-[10px] font-bold text-black/20 uppercase tracking-widest">活动时间</p>
-                            <p className="text-sm font-semibold text-black/70">{selectedEvent.time}</p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-start gap-4">
-                          <div className="w-10 h-10 rounded-2xl bg-amber-50 flex items-center justify-center text-amber-600 shrink-0">
-                            <MapPin size={20} />
-                          </div>
-                          <div className="space-y-0.5">
-                            <p className="text-[10px] font-bold text-black/20 uppercase tracking-widest">活动地点</p>
-                            <p className="text-sm font-semibold text-black/70">{selectedEvent.location}</p>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="space-y-4">
-                        <h4 className="text-xs font-bold uppercase tracking-[0.2em] text-black/20">活动流程</h4>
+                    {/* Content */}
+                    <div className="flex-1 -mt-8 relative bg-white rounded-t-[2.5rem] overflow-y-auto">
+                      <div className="px-6 pt-8 pb-32 space-y-6">
+                        {/* Title + tags */}
                         <div className="space-y-3">
-                          {selectedEvent.details.map((detail, i) => (
-                            <div key={i} className="flex items-center gap-3 text-sm font-medium text-black/60">
-                              <div className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
-                              {detail}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {selectedEvent.gift && (
-                        <div className="p-6 bg-indigo-50/50 rounded-3xl border border-indigo-100/50 space-y-2">
-                          <div className="flex items-center gap-2 text-indigo-600">
-                            <Sparkles size={16} />
-                            <span className="text-xs font-bold uppercase tracking-widest">伴手礼</span>
+                          <h2 className="text-2xl font-bold tracking-tight leading-tight">{selectedEvent.title}</h2>
+                          <div className="flex flex-wrap gap-1.5">
+                            {selectedEvent.tags.map(tag => (
+                              <span key={tag} className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-black/5 text-black/50">{tag}</span>
+                            ))}
+                            {selectedEvent.ticketInfo && (
+                              <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600">{selectedEvent.ticketInfo}</span>
+                            )}
                           </div>
-                          <p className="text-sm text-indigo-900/70 font-medium leading-relaxed">{selectedEvent.gift}</p>
                         </div>
-                      )}
 
-                      {selectedEvent.notes && (
-                        <div className="flex gap-3 p-4 bg-amber-50/30 rounded-2xl border border-amber-100/30">
-                          <Info size={16} className="text-amber-500 shrink-0 mt-0.5" />
-                          <p className="text-xs text-amber-900/60 leading-relaxed italic">{selectedEvent.notes}</p>
+                        {/* Time + location */}
+                        <div className="flex flex-col gap-2.5">
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-500 shrink-0">
+                              <Clock size={16} />
+                            </div>
+                            <p className="text-sm font-semibold text-[#1A1A1A]/70">{selectedEvent.time}</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-amber-50 flex items-center justify-center text-amber-500 shrink-0">
+                              <MapPin size={16} />
+                            </div>
+                            <p className="text-sm font-semibold text-[#1A1A1A]/70">{selectedEvent.location}</p>
+                          </div>
                         </div>
-                      )}
 
-                      <div className="pt-4">
-                        <button 
-                          disabled={selStatus === 'ended'}
-                          className={cn(
-                            "w-full py-5 rounded-2xl font-bold text-lg shadow-xl transition-all active:scale-95",
-                            selStatus === 'ended' 
-                              ? "bg-neutral-100 text-neutral-400 cursor-not-allowed shadow-none" 
-                              : "bg-black text-white hover:bg-black/90"
-                          )}
-                        >
-                          {selStatus === 'ended' ? '活动已结束' : '立即报名'}
-                        </button>
+                        {/* AI Insight */}
+                        <div className={cn(
+                          "rounded-2xl px-4 py-3 flex items-start gap-3",
+                          getEventStatus(selectedEvent) === 'ongoing' ? "bg-emerald-50" :
+                          getEventStatus(selectedEvent) === 'future' ? "bg-indigo-50" : "bg-neutral-50"
+                        )}>
+                          <Sparkles size={14} className={cn(
+                            "mt-0.5 flex-shrink-0",
+                            getEventStatus(selectedEvent) === 'ongoing' ? "text-emerald-500" :
+                            getEventStatus(selectedEvent) === 'future' ? "text-indigo-500" : "text-neutral-400"
+                          )} />
+                          <p className="text-[12px] font-medium leading-relaxed text-[#1A1A1A]/70">{selectedEvent.aiInsight}</p>
+                        </div>
+
+                        {/* Details */}
+                        <div className="space-y-3">
+                          <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/25">活动流程</h4>
+                          <div className="space-y-2.5">
+                            {selectedEvent.details.map((detail, i) => (
+                              <div key={i} className="flex items-start gap-3 text-sm text-black/60">
+                                <div className="w-5 h-5 rounded-full bg-black/5 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                  <span className="text-[10px] font-bold text-black/30">{i + 1}</span>
+                                </div>
+                                <span className="font-medium leading-snug">{detail}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {selectedEvent.gift && (
+                          <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 space-y-1.5">
+                            <div className="flex items-center gap-2 text-amber-600">
+                              <Gift size={14} />
+                              <span className="text-[10px] font-bold uppercase tracking-widest">伴手礼</span>
+                            </div>
+                            <p className="text-sm text-amber-900/70 font-medium leading-relaxed">{selectedEvent.gift}</p>
+                          </div>
+                        )}
+
+                        {selectedEvent.notes && (
+                          <div className="flex gap-3 p-3.5 bg-orange-50/50 rounded-xl border border-orange-100/50">
+                            <Info size={14} className="text-orange-400 shrink-0 mt-0.5" />
+                            <p className="text-[11px] text-orange-900/60 leading-relaxed">{selectedEvent.notes}</p>
+                          </div>
+                        )}
+
+                        {/* ──── AI 行程规划 ──── */}
+                        {getEventStatus(selectedEvent) !== 'ended' && (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-lg bg-black flex items-center justify-center">
+                                <Navigation size={12} className="text-white" />
+                              </div>
+                              <h4 className="text-sm font-bold">帮我规划当天行程</h4>
+                            </div>
+
+                            {/* Scene chips */}
+                            <div className="space-y-2">
+                              <p className="text-[11px] text-black/40 font-medium">今天是什么场景？</p>
+                              <div className="flex flex-wrap gap-2">
+                                {selectedEvent.scenes.map(scene => (
+                                  <button
+                                    key={scene}
+                                    onClick={() => { setEventScene(scene); setEventItinerary(null); }}
+                                    className={cn(
+                                      "text-[12px] font-semibold px-3.5 py-1.5 rounded-full transition-all active:scale-95",
+                                      eventScene === scene
+                                        ? "bg-[#1A1A1A] text-white"
+                                        : "bg-black/5 text-[#1A1A1A]/60 hover:bg-black/10"
+                                    )}
+                                  >
+                                    {scene}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Arrive time */}
+                            {eventScene && (
+                              <motion.div
+                                initial={{ opacity: 0, y: 6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="space-y-2"
+                              >
+                                <p className="text-[11px] text-black/40 font-medium">预计几点到？</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {['上午10点', '中午12点', '下午2点', '下午4点', '傍晚6点', '晚上8点'].map(t => (
+                                    <button
+                                      key={t}
+                                      onClick={() => setEventArriveTime(t)}
+                                      className={cn(
+                                        "text-[12px] font-semibold px-3 py-1.5 rounded-full transition-all active:scale-95",
+                                        eventArriveTime === t
+                                          ? "bg-indigo-600 text-white"
+                                          : "bg-black/5 text-[#1A1A1A]/60"
+                                      )}
+                                    >
+                                      {t}
+                                    </button>
+                                  ))}
+                                </div>
+                              </motion.div>
+                            )}
+
+                            {/* Generate button */}
+                            {eventScene && (
+                              <motion.button
+                                initial={{ opacity: 0, y: 6 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                onClick={handleGenerateItinerary}
+                                disabled={itineraryLoading}
+                                className="w-full py-3.5 rounded-2xl font-bold text-sm bg-[#1A1A1A] text-white flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-60"
+                              >
+                                {itineraryLoading ? (
+                                  <><Loader2 size={15} className="animate-spin" /> 生成中...</>
+                                ) : (
+                                  <><Zap size={15} /> 生成 {eventScene} 专属行程</>
+                                )}
+                              </motion.button>
+                            )}
+
+                            {/* Itinerary result */}
+                            <AnimatePresence>
+                              {eventItinerary && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: 10 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0 }}
+                                  className="rounded-2xl bg-black/[0.03] border border-black/8 p-4 space-y-3"
+                                >
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <Sparkles size={13} className="text-indigo-500" />
+                                    <p className="text-[11px] font-bold text-indigo-600 uppercase tracking-[0.1em]">{eventScene} · 专属行程</p>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {eventItinerary.steps.map((step, i) => (
+                                      <p key={i} className="text-[13px] font-medium text-[#1A1A1A]/75 leading-relaxed">{step}</p>
+                                    ))}
+                                  </div>
+                                  {eventItinerary.tip && (
+                                    <div className="pt-2 border-t border-black/8 flex items-start gap-2">
+                                      <Quote size={12} className="text-black/25 shrink-0 mt-0.5" />
+                                      <p className="text-[11px] text-black/45 italic leading-relaxed">{eventItinerary.tip}</p>
+                                    </div>
+                                  )}
+                                  {/* 跳转到美食推荐 */}
+                                  <button
+                                    onClick={() => { setSelectedEvent(null); setMode('dining'); }}
+                                    className="w-full mt-1 py-2.5 rounded-xl bg-white border border-black/10 text-[12px] font-semibold text-[#1A1A1A]/60 flex items-center justify-center gap-1.5 active:scale-95 transition-all"
+                                  >
+                                    <Utensils size={13} />
+                                    帮我找这顿饭去哪儿吃
+                                    <ChevronRight size={13} />
+                                  </button>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        )}
+
+                        {/* Quick questions → Chat */}
+                        {selectedEvent.aiQuestions.length > 0 && (
+                          <div className="space-y-2">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/25">还想了解</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {selectedEvent.aiQuestions.map(q => (
+                                <button
+                                  key={q}
+                                  onClick={() => { setSelectedEvent(null); setMode('chat'); sendChatMessage(q); }}
+                                  className="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-black/5 text-[#1A1A1A]/60 hover:bg-black/10 transition-all active:scale-95"
+                                >
+                                  {q}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      </>);})()}
                     </div>
                   </motion.div>
                 )}
@@ -1460,166 +1633,324 @@ export default function App() {
             </motion.div>
           )}
 
-          {mode === 'parking' && (
+          {/* 停车助手功能已停用 */}
+          {/* {mode === 'parking' && ( ... )} */}
+
+          {mode === 'member' && (
             <motion.div
-              key="parking"
+              key="member"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="fixed inset-x-0 flex flex-col bg-[#FAF9F6]"
+              className="fixed inset-x-0 overflow-y-auto bg-[#FAF9F6]"
               style={{ top: '60px', bottom: '0' }}
             >
-              {/* 实时车位状态栏 */}
-              <div className="flex-shrink-0 px-4 pt-4 pb-3 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-[9px] uppercase tracking-[0.25em] font-bold text-[#1A1A1A]/25">停车场实时状态</p>
-                    <p className="text-xl font-bold text-[#1A1A1A]">🅿️ 停车助手</p>
-                    <p className="text-[11px] text-[#1A1A1A]/35">点击楼层卡片即可预留车位</p>
-                  </div>
-                  <button
-                    onClick={() => { setParkingLevels(getParkingStatus()); }}
-                    className="text-[10px] font-semibold text-indigo-400 hover:text-indigo-600 transition-colors px-2 py-1 rounded-lg bg-indigo-50"
-                  >
-                    刷新
-                  </button>
+              {memberLoading || !memberProfile ? (
+                <div className="flex items-center justify-center h-full">
+                  <Loader2 size={28} className="animate-spin text-indigo-400" />
                 </div>
-                <div className="grid grid-cols-3 gap-2">
-                  {parkingLevels.map(level => {
-                    const pct = level.available / level.total;
-                    const color = pct > 0.3 ? 'bg-emerald-500' : pct > 0.1 ? 'bg-amber-400' : 'bg-red-400';
-                    const textColor = pct > 0.3 ? 'text-emerald-600' : pct > 0.1 ? 'text-amber-600' : 'text-red-500';
-                    const isReserved = parkingReservation?.level.startsWith(level.id);
-                    return (
-                      <button
-                        key={level.id}
-                        onClick={() => {
-                          if (parkingReservation) {
-                            // 已有预定，询问是否更改
-                            handleParkingSubmit(null, `我想把车位改到${level.id}`);
-                          } else {
-                            handleParkingSubmit(null, `帮我预留${level.id}的车位`);
-                          }
-                        }}
-                        className={cn(
-                          "rounded-2xl px-3 py-2.5 border text-left active:scale-95 transition-all",
-                          isReserved
-                            ? "bg-emerald-50 border-emerald-300 ring-1 ring-emerald-400/50"
-                            : "bg-white border-black/8"
-                        )}
-                      >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-xs font-bold text-[#1A1A1A]">{level.id}</span>
-                          {isReserved
-                            ? <span className="text-[9px] font-bold text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded-md">已预留</span>
-                            : <span className={cn("text-[10px] font-bold", textColor)}>{level.available}</span>
-                          }
-                        </div>
-                        <div className="h-1.5 bg-black/5 rounded-full overflow-hidden mb-1.5">
-                          <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${Math.max(4, pct * 100)}%` }} />
-                        </div>
-                        <p className="text-[9px] text-[#1A1A1A]/35 leading-tight">{level.tag}</p>
-                      </button>
-                    );
-                  })}
-                </div>
+              ) : (
+                <div className="pb-10">
+                  {/* ── Hero Card ── */}
+                  <div className="relative mx-4 mt-4 rounded-3xl overflow-hidden bg-gradient-to-br from-indigo-600 via-indigo-500 to-violet-500 p-5 shadow-xl">
+                    <div className="absolute top-0 right-0 w-40 h-40 bg-white/5 rounded-full -translate-y-10 translate-x-10" />
+                    <div className="absolute bottom-0 left-0 w-28 h-28 bg-white/5 rounded-full translate-y-8 -translate-x-8" />
 
-                {/* 预定成功卡片 — 常驻显示，不可手动关闭 */}
-                {parkingReservation && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="bg-emerald-500 rounded-2xl px-4 py-3"
-                  >
-                    <div className="flex items-center gap-3 mb-2.5">
-                      <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center flex-shrink-0 text-lg">🎫</div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-white font-bold text-sm">{parkingReservation.spot}</p>
-                        <p className="text-white/70 text-[11px]">
-                          {parkingReservation.level} · 有效至 {parkingReservation.validUntil.getHours()}:{String(parkingReservation.validUntil.getMinutes()).padStart(2, '0')}
-                        </p>
+                    {/* Top row */}
+                    <div className="flex items-start justify-between relative">
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-2xl">
+                          {memberProfile.avatarEmoji}
+                        </div>
+                        <div>
+                          <p className="text-white font-bold text-base leading-tight">{memberProfile.name}</p>
+                          <p className="text-white/50 text-[11px] mt-0.5">ID {memberProfile.id}</p>
+                        </div>
+                      </div>
+                      {/* Level badge */}
+                      <div className="flex items-center gap-1.5 bg-white/15 backdrop-blur-md rounded-xl px-3 py-1.5">
+                        <Crown size={12} className="text-amber-300" />
+                        <span className="text-white text-[11px] font-bold">{memberProfile.levelLabel}</span>
                       </div>
                     </div>
-                    <button
-                      onClick={() => {
-                        setParkingReservation(null);
-                        handleParkingSubmit(null, '我要取消预订的车位');
-                      }}
-                      className="w-full py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs font-semibold transition-all active:scale-95"
-                    >
-                      取消预订
-                    </button>
-                  </motion.div>
-                )}
-              </div>
 
-              {/* 对话区 */}
-              <div
-                ref={parkingChatRef}
-                className="flex-1 overflow-y-auto px-4 pb-2 space-y-3 min-h-0"
-              >
-                {parkingHistory.map((msg, i) => (
-                  <div key={i} className={cn("flex", msg.role === 'user' ? 'justify-end' : 'justify-start')}>
-                    {msg.role === 'assistant' && (
-                      <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-sm flex-shrink-0 mr-2 mt-0.5">🅿️</div>
+                    {/* Points */}
+                    <div className="mt-5 relative">
+                      <p className="text-white/50 text-[10px] uppercase tracking-[0.2em] font-bold">当前积分</p>
+                      <p className="text-white text-4xl font-black tracking-tight leading-none mt-1">
+                        {memberProfile.points.toLocaleString()}
+                      </p>
+                    </div>
+
+                    {/* Progress bar */}
+                    {memberProfile.nextLevel && (
+                      <div className="mt-4 relative">
+                        <div className="flex justify-between items-center mb-1.5">
+                          <p className="text-white/50 text-[10px] font-medium">累计消费</p>
+                          <p className="text-white/50 text-[10px] font-medium">
+                            距{memberProfile.nextLevelLabel} 还差 ¥{((memberProfile.nextThreshold ?? 0) - memberProfile.totalSpending).toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="h-1.5 bg-white/20 rounded-full overflow-hidden">
+                          <motion.div
+                            initial={{ width: 0 }}
+                            animate={{ width: `${memberProfile.progressPct}%` }}
+                            transition={{ duration: 0.8, ease: 'easeOut' }}
+                            className="h-full bg-white rounded-full"
+                          />
+                        </div>
+                      </div>
                     )}
-                    <div className={cn(
-                      "max-w-[80%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
-                      msg.role === 'user'
-                        ? "bg-[#1A1A1A] text-white rounded-tr-sm"
-                        : "bg-white border border-black/8 text-[#1A1A1A] rounded-tl-sm shadow-sm"
-                    )}>
-                      {/* 最后一条 assistant 消息用流式显示 */}
-                      {msg.role === 'assistant' && i === parkingHistory.length - 1
-                        ? displayedText || msg.text
-                        : msg.text}
-                    </div>
-                  </div>
-                ))}
-                {parkingLoading && (
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-sm">🅿️</div>
-                    <div className="bg-white border border-black/8 rounded-2xl rounded-tl-sm px-3.5 py-2.5 flex gap-1.5 shadow-sm">
-                      {[0, 1, 2].map(i => (
-                        <span key={i} className="w-1.5 h-1.5 bg-indigo-300 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
 
-              {/* 快捷提问 + 输入框 */}
-              <div className="flex-shrink-0 px-4 pb-4 pt-2 space-y-2">
-                {parkingHistory.length <= 1 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {['现在有多少车位？', '我还有15分钟到', '帮我预留B3车位', '停车怎么收费？'].map(q => (
+                    {/* Check-in button */}
+                    <div className="mt-4 flex items-center justify-between relative">
+                      <div className="flex items-center gap-1.5 text-white/60 text-[11px] font-medium">
+                        <CalendarCheck size={13} className="text-white/50" />
+                        已连续签到 <span className="text-white font-bold">{memberProfile.checkinStreak}</span> 天
+                      </div>
                       <button
-                        key={q}
-                        onClick={() => handleParkingSubmit(null, q)}
-                        className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-white border border-black/8 text-[#1A1A1A]/50 hover:text-[#1A1A1A]/80 hover:border-black/20 transition-all shadow-sm"
+                        onClick={handleCheckin}
+                        disabled={memberProfile.checkedInToday || checkinAnimating}
+                        className={cn(
+                          "flex items-center gap-1.5 px-4 py-2 rounded-xl text-[12px] font-bold transition-all active:scale-95",
+                          memberProfile.checkedInToday
+                            ? "bg-white/10 text-white/40 cursor-not-allowed"
+                            : "bg-white text-indigo-600 shadow-lg hover:bg-white/90"
+                        )}
                       >
-                        {q}
+                        {checkinAnimating ? <Loader2 size={13} className="animate-spin" /> : <CalendarCheck size={13} />}
+                        {memberProfile.checkedInToday ? '已签到' : '立即签到'}
+                      </button>
+                    </div>
+
+                    {/* Checkin toast */}
+                    <AnimatePresence>
+                      {checkinResult && checkinResult.success && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0 }}
+                          onAnimationComplete={() => setTimeout(() => setCheckinResult(null), 2000)}
+                          className="absolute inset-x-4 bottom-14 bg-emerald-500 rounded-xl px-4 py-2 flex items-center gap-2"
+                        >
+                          <Sparkles size={14} className="text-white" />
+                          <p className="text-white text-xs font-semibold">{checkinResult.message}</p>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  {/* ── Quick action tabs ── */}
+                  <div className="flex gap-2 px-4 mt-4 overflow-x-auto no-scrollbar">
+                    {([
+                      { tab: 'overview' as const,      label: '概览',   icon: <Crown size={14} /> },
+                      { tab: 'coupons' as const,       label: '优惠券', icon: <Gift size={14} /> },
+                      { tab: 'transactions' as const,  label: '消费记录', icon: <Receipt size={14} /> },
+                      { tab: 'points' as const,        label: '积分明细', icon: <Coins size={14} /> },
+                    ] as const).map(({ tab, label, icon }) => (
+                      <button
+                        key={tab}
+                        onClick={() => handleLoadMemberTab(tab)}
+                        className={cn(
+                          "flex items-center gap-1.5 px-3.5 py-2 rounded-2xl text-[12px] font-semibold flex-shrink-0 transition-all active:scale-95",
+                          memberSubPage === tab
+                            ? "bg-indigo-600 text-white shadow-md"
+                            : "bg-white border border-black/8 text-[#1A1A1A]/50"
+                        )}
+                      >
+                        {icon}{label}
                       </button>
                     ))}
                   </div>
-                )}
-                <form onSubmit={handleParkingSubmit} className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="问问停车助手..."
-                    value={parkingInput}
-                    onChange={e => setParkingInput(e.target.value)}
-                    className="flex-1 bg-white border border-black/8 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-300 transition-all shadow-sm placeholder:text-black/25"
-                  />
-                  <button
-                    type="submit"
-                    disabled={parkingLoading || !parkingInput.trim()}
-                    className="w-11 h-11 bg-[#1A1A1A] text-white rounded-2xl flex items-center justify-center disabled:opacity-30 active:scale-95 transition-all shadow-md flex-shrink-0"
-                  >
-                    {parkingLoading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                  </button>
-                </form>
-              </div>
+
+                  {/* ── Overview ── */}
+                  {memberSubPage === 'overview' && (
+                    <motion.div
+                      key="overview"
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="px-4 mt-4 space-y-3"
+                    >
+                      {/* Stats row */}
+                      <div className="grid grid-cols-2 gap-3">
+                        {[
+                          { label: '累计消费', value: `¥${memberProfile.totalSpending.toLocaleString()}`, icon: <TrendingUp size={15} className="text-indigo-400" /> },
+                          { label: '可用积分', value: memberProfile.points.toLocaleString(), icon: <Coins size={15} className="text-amber-400" /> },
+                        ].map(item => (
+                          <div key={item.label} className="bg-white rounded-2xl border border-black/8 p-4 flex items-center gap-3 shadow-sm">
+                            <div className="w-9 h-9 rounded-xl bg-[#FAF9F6] flex items-center justify-center flex-shrink-0">{item.icon}</div>
+                            <div>
+                              <p className="text-[10px] text-[#1A1A1A]/35 font-medium">{item.label}</p>
+                              <p className="text-base font-bold text-[#1A1A1A] leading-tight">{item.value}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Benefits card */}
+                      <div className="bg-white rounded-2xl border border-black/8 overflow-hidden shadow-sm">
+                        <div className="px-4 pt-3.5 pb-2 border-b border-black/5 flex items-center gap-2">
+                          <Crown size={13} className="text-amber-400" />
+                          <p className="text-[11px] font-bold text-[#1A1A1A]/40 uppercase tracking-wider">{memberProfile.levelLabel}权益</p>
+                        </div>
+                        <div className="px-4 py-3 space-y-2.5">
+                          {[
+                            { icon: '🎁', text: '每月专属优惠券 × 2 张' },
+                            { icon: '⭐', text: '消费 ¥10 = 1 积分（翻倍加速）' },
+                            { icon: '🎂', text: '生日月专属立减礼' },
+                            { icon: '📱', text: '优先抢购限量活动名额' },
+                          ].map((b, i) => (
+                            <div key={i} className="flex items-center gap-3">
+                              <span className="text-base w-6 text-center flex-shrink-0">{b.icon}</span>
+                              <p className="text-[12px] text-[#1A1A1A]/65 font-medium">{b.text}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Level roadmap */}
+                      <div className="bg-white rounded-2xl border border-black/8 overflow-hidden shadow-sm">
+                        <div className="px-4 pt-3.5 pb-2 border-b border-black/5">
+                          <p className="text-[11px] font-bold text-[#1A1A1A]/40 uppercase tracking-wider">会员等级</p>
+                        </div>
+                        <div className="px-4 py-3 space-y-3">
+                          {[
+                            { key: 'regular',  label: '普通会员', threshold: '¥0',     color: 'bg-gray-400' },
+                            { key: 'gold',     label: '黄金会员', threshold: '¥1,000', color: 'bg-amber-400' },
+                            { key: 'platinum', label: '铂金会员', threshold: '¥5,000', color: 'bg-violet-500' },
+                            { key: 'diamond',  label: '钻石会员', threshold: '¥15,000', color: 'bg-blue-500' },
+                          ].map(l => (
+                            <div key={l.key} className="flex items-center gap-3">
+                              <div className={cn("w-2 h-2 rounded-full flex-shrink-0", l.color, memberProfile.level === l.key && "ring-2 ring-offset-1 ring-indigo-400")} />
+                              <p className={cn("text-[12px] font-semibold flex-1", memberProfile.level === l.key ? "text-indigo-600" : "text-[#1A1A1A]/40")}>
+                                {l.label}
+                              </p>
+                              <p className="text-[11px] text-[#1A1A1A]/30 font-medium">{l.threshold} 起</p>
+                              {memberProfile.level === l.key && (
+                                <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">当前</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* ── Coupons ── */}
+                  {memberSubPage === 'coupons' && (
+                    <motion.div key="coupons" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="px-4 mt-4 space-y-3">
+                      {memberCoupons.length === 0 ? (
+                        <div className="flex items-center justify-center py-16 text-[#1A1A1A]/25">
+                          <Loader2 size={22} className="animate-spin" />
+                        </div>
+                      ) : memberCoupons.map(c => (
+                        <div
+                          key={c.id}
+                          className={cn(
+                            "bg-white rounded-2xl border overflow-hidden shadow-sm",
+                            c.used || c.expired ? "opacity-45 border-black/5" : "border-black/8"
+                          )}
+                        >
+                          <div className="flex">
+                            {/* Discount badge */}
+                            <div className={cn(
+                              "w-20 flex-shrink-0 flex flex-col items-center justify-center py-4 border-r border-dashed",
+                              c.used || c.expired ? "border-black/10 bg-[#FAF9F6]" : "border-indigo-100 bg-indigo-50"
+                            )}>
+                              <p className={cn("text-lg font-black leading-none", c.used || c.expired ? "text-[#1A1A1A]/30" : "text-indigo-600")}>
+                                {c.discountText}
+                              </p>
+                              <p className={cn("text-[9px] font-medium mt-1", c.used || c.expired ? "text-[#1A1A1A]/25" : "text-indigo-400")}>
+                                {c.tag}
+                              </p>
+                            </div>
+                            {/* Info */}
+                            <div className="flex-1 px-4 py-3 min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="text-sm font-bold text-[#1A1A1A] leading-tight">{c.title}</p>
+                                {c.used && <span className="text-[9px] font-bold text-[#1A1A1A]/30 bg-black/5 px-2 py-0.5 rounded-full flex-shrink-0">已使用</span>}
+                                {c.expired && !c.used && <span className="text-[9px] font-bold text-red-400 bg-red-50 px-2 py-0.5 rounded-full flex-shrink-0">已过期</span>}
+                              </div>
+                              <p className="text-[11px] text-[#1A1A1A]/40 mt-1 leading-snug">{c.desc}</p>
+                              <div className="flex items-center justify-between mt-2">
+                                {c.minSpend > 0 && (
+                                  <p className="text-[10px] text-[#1A1A1A]/30 font-medium">满 ¥{c.minSpend} 可用</p>
+                                )}
+                                <p className="text-[10px] text-[#1A1A1A]/30 ml-auto">{c.expiry} 到期</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </motion.div>
+                  )}
+
+                  {/* ── Transactions ── */}
+                  {memberSubPage === 'transactions' && (
+                    <motion.div key="transactions" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="px-4 mt-4">
+                      {memberTransactions.length === 0 ? (
+                        <div className="flex items-center justify-center py-16 text-[#1A1A1A]/25">
+                          <Loader2 size={22} className="animate-spin" />
+                        </div>
+                      ) : (
+                        <div className="bg-white rounded-2xl border border-black/8 overflow-hidden shadow-sm divide-y divide-black/5">
+                          {memberTransactions.map(t => (
+                            <div key={t.id} className="flex items-center gap-3 px-4 py-3.5">
+                              <div className="w-9 h-9 rounded-xl bg-[#FAF9F6] flex items-center justify-center flex-shrink-0 text-base">
+                                {t.category === '餐饮' ? '🍽️' : t.category === '咖啡' ? '☕' : '🛍️'}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-semibold text-[#1A1A1A] truncate">{t.merchant}</p>
+                                <p className="text-[11px] text-[#1A1A1A]/35 mt-0.5">{t.date}</p>
+                              </div>
+                              <div className="text-right flex-shrink-0">
+                                <p className="text-sm font-bold text-[#1A1A1A]">¥{t.amount}</p>
+                                <p className="text-[10px] text-amber-500 font-medium">+{t.pointsEarned}分</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+
+                  {/* ── Points history ── */}
+                  {memberSubPage === 'points' && (
+                    <motion.div key="points" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="px-4 mt-4">
+                      {memberPointsHistory.length === 0 ? (
+                        <div className="flex items-center justify-center py-16 text-[#1A1A1A]/25">
+                          <Loader2 size={22} className="animate-spin" />
+                        </div>
+                      ) : (
+                        <div className="bg-white rounded-2xl border border-black/8 overflow-hidden shadow-sm divide-y divide-black/5">
+                          {memberPointsHistory.map(h => (
+                            <div key={h.id} className="flex items-center gap-3 px-4 py-3.5">
+                              <div className={cn(
+                                "w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0",
+                                h.type === 'earn' ? "bg-amber-50" : "bg-red-50"
+                              )}>
+                                {h.type === 'earn'
+                                  ? <Coins size={16} className="text-amber-400" />
+                                  : <Gift size={16} className="text-red-400" />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-semibold text-[#1A1A1A] truncate">{h.desc}</p>
+                                <p className="text-[11px] text-[#1A1A1A]/35 mt-0.5">{h.date}</p>
+                              </div>
+                              <p className={cn(
+                                "text-sm font-bold flex-shrink-0",
+                                h.type === 'earn' ? "text-amber-500" : "text-red-400"
+                              )}>
+                                {h.type === 'earn' ? '+' : ''}{h.delta}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
