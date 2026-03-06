@@ -117,6 +117,40 @@ export interface EventItinerary {
   tip: string;
 }
 
+export interface TodayStatusItem {
+  label: string;
+  value: string;
+  tone: 'green' | 'amber' | 'indigo' | 'neutral';
+}
+
+export interface TodayHighlight {
+  title: string;
+  desc: string;
+  action: 'dining' | 'events' | 'chat';
+  actionLabel: string;
+  query?: string;
+}
+
+export interface TodaySummary {
+  headline: string;
+  subheadline: string;
+  statuses: TodayStatusItem[];
+  recommendedAction: string;
+  rightNow: string;
+  avoidNow: string;
+  bestFor: string[];
+  highlights: TodayHighlight[];
+}
+
+export interface DayPlan {
+  summary: string;
+  steps: string[];
+  tip: string;
+  suggestions: string[];
+  action?: 'dining' | 'events' | 'parking';
+  actionLabel?: string;
+}
+
 export async function getEventItinerary(params: {
   eventId: string;
   eventTitle: string;
@@ -136,6 +170,71 @@ export async function getEventItinerary(params: {
     arrive_time: params.arriveTime,
   });
   return { steps: data.steps ?? [], tip: data.tip ?? '' };
+}
+
+export async function getTodaySummary(): Promise<TodaySummary> {
+  const data = await apiGet<{
+    headline: string;
+    subheadline: string;
+    statuses: Array<{ label: string; value: string; tone: TodayStatusItem['tone'] }>;
+    recommended_action: string;
+    right_now: string;
+    avoid_now: string;
+    best_for: string[];
+    highlights: Array<{
+      title: string;
+      desc: string;
+      action: TodayHighlight['action'];
+      action_label: string;
+      query?: string;
+    }>;
+  }>('/api/today/summary');
+  return {
+    headline: data.headline,
+    subheadline: data.subheadline,
+    statuses: data.statuses ?? [],
+    recommendedAction: data.recommended_action,
+    rightNow: data.right_now,
+    avoidNow: data.avoid_now,
+    bestFor: data.best_for ?? [],
+    highlights: (data.highlights ?? []).map((item) => ({
+      title: item.title,
+      desc: item.desc,
+      action: item.action,
+      actionLabel: item.action_label,
+      query: item.query,
+    })),
+  };
+}
+
+export async function generateDayPlan(params: {
+  scene: string;
+  durationHours: number;
+  budget?: number;
+  arrivalTime?: string;
+}): Promise<DayPlan> {
+  const data = await apiFetch<{
+    summary: string;
+    steps: string[];
+    tip: string;
+    suggestions: string[];
+    action?: string;
+    action_label?: string;
+  }>('/api/plan/day', {
+    scene: params.scene,
+    duration_hours: params.durationHours,
+    budget: params.budget,
+    arrival_time: params.arrivalTime,
+  });
+
+  return {
+    summary: data.summary,
+    steps: data.steps ?? [],
+    tip: data.tip ?? '',
+    suggestions: data.suggestions ?? [],
+    action: data.action as DayPlan['action'],
+    actionLabel: data.action_label,
+  };
 }
 // export async function makeReservation(...): Promise<ParkingReservation> { ... }
 // export async function getParkingResponse(...): Promise<string> { ... }

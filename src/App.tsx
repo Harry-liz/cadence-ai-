@@ -39,11 +39,11 @@ import {
   getChatResponseStructured,
   getMemberProfile, postCheckin, getMemberCoupons,
   getMemberTransactions, getMemberPointsHistory,
-  getEventItinerary,
+  getEventItinerary, getTodaySummary, generateDayPlan,
   type Restaurant, type Deal,
   type StructuredChatResponse,
   type MemberProfile, type Coupon, type Transaction, type PointsRecord, type CheckinResult,
-  type EventItinerary,
+  type EventItinerary, type TodaySummary, type DayPlan,
 } from './services/geminiService';
 // 停车助手功能已停用：getParkingResponse, getParkingStatus, makeReservation
 // type ParkingLevel, type ParkingReservation
@@ -65,7 +65,7 @@ function resolveRestaurantImage(src: string) {
   return src;
 }
 
-type Mode = 'home' | 'chat' | 'dining' | 'style' | 'events' | 'member'; // 'parking' 已停用
+type Mode = 'home' | 'today' | 'plan' | 'chat' | 'dining' | 'style' | 'events' | 'member'; // 'parking' 已停用
 
 type MemberSubPage = 'overview' | 'coupons' | 'transactions' | 'points';
 
@@ -77,6 +77,12 @@ interface ChatMsg {
   action?: StructuredChatResponse['action'];
   actionLabel?: string;
   route?: string[];
+}
+
+interface ActivePlan {
+  title: string;
+  subtitle: string;
+  plan: DayPlan;
 }
 
 interface MallEvent {
@@ -96,6 +102,8 @@ interface MallEvent {
   aiTips: string[];
   aiQuestions: string[];
   ticketInfo?: string;
+  hotTag?: string;         // 紧迫感标签，如「限量告急」「早鸟票开抢」
+  sceneInsights?: Record<string, string>; // 场景专属 AI 一句话
 }
 
 function getEventStatus(event: MallEvent): 'future' | 'ongoing' | 'ended' {
@@ -137,9 +145,15 @@ const MALL_EVENTS: MallEvent[] = [
     tags: ['限时快闪', '限量周边', '明星活动'],
     scenes: ['两个人约会', '朋友聚会', '自己逛逛'],
     ticketInfo: '免费入场',
+    hotTag: '限量周边告急',
     aiInsight: '今天还在！工作日下午人少，限量周边现在还有货，去的话今天是最好的时机。',
     aiTips: ['限量周边通常活动中期就会售罄，越早去越好', '活动在 L1 中庭，从主入口进来直走即可看到', '活动只到 3 月 8 日，别拖到最后一天人挤人'],
     aiQuestions: ['ta 是哪位明星？', '周边怎么购买？', '顺道推荐什么餐厅？'],
+    sceneInsights: {
+      '两个人约会': '一起来打卡快闪，逛完正好去 B1 探鱼或绿茶，时间刚好控制在 2 小时内。',
+      '朋友聚会': '适合 2-4 人组队，氛围感强，朋友们一起拍照出片率很高。',
+      '自己逛逛': '工作日一个人来完全不尴尬，人少随便拍，周边也更容易抢到。',
+    },
   },
   {
     id: '3',
@@ -158,9 +172,16 @@ const MALL_EVENTS: MallEvent[] = [
     tags: ['亲子出游', '情侣约会', '艺术爱好者'],
     scenes: ['带小孩来玩', '两个人约会', '朋友聚会', '自己逛逛'],
     ticketInfo: '需购票入场',
+    hotTag: '早鸟票预售中',
     aiInsight: '还有 26 天开幕，现在关注官方购票渠道可以抢早鸟票，节假日票通常提前一周售罄。',
     aiTips: ['工作日下午 2-4 点人流量约为周末的 1/3，体验最佳', '带小朋友来光影互动区会是最大亮点', '建议提前在官方小程序购票，现场排队等候时间长'],
     aiQuestions: ['怎么买票？', '适合几岁的小孩？', '帮我规划当天行程'],
+    sceneInsights: {
+      '带小孩来玩': '光影互动区对 3-10 岁小朋友最有吸引力，建议工作日下午来避开人群，玩完可去 L3 客家围用餐。',
+      '两个人约会': '光影展天然出片，适合傍晚入场配合自然光，展后可去露台花园续摊。',
+      '朋友聚会': '适合 3-6 人小团体，互动装置大家一起玩更有趣，记得提前团票更便宜。',
+      '自己逛逛': '一个人来反而能沉浸体验，工作日早场 10-12 点最清静，可以慢慢拍照。',
+    },
   },
   {
     id: '1',
@@ -239,6 +260,11 @@ export default function App() {
   const [fullChatHistory, setFullChatHistory] = useState<ChatMsg[]>([]);
   const [chatStreaming, setChatStreaming] = useState('');
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const [todaySummary, setTodaySummary] = useState<TodaySummary | null>(null);
+  const [todayLoading, setTodayLoading] = useState(true);
+  const [quickPlanLoadingId, setQuickPlanLoadingId] = useState<string | null>(null);
+  const [activePlan, setActivePlan] = useState<ActivePlan | null>(null);
+  const [homeSceneIndex, setHomeSceneIndex] = useState(0);
 
   // Events State
   const [selectedEvent, setSelectedEvent] = useState<MallEvent | null>(null);
@@ -246,6 +272,7 @@ export default function App() {
   const [eventArriveTime, setEventArriveTime] = useState('');
   const [eventItinerary, setEventItinerary] = useState<EventItinerary | null>(null);
   const [itineraryLoading, setItineraryLoading] = useState(false);
+  const [eventSceneFilter, setEventSceneFilter] = useState(''); // 场景筛选 chip
 
   // Member State
   const [memberProfile, setMemberProfile] = useState<MemberProfile | null>(null);
@@ -274,12 +301,14 @@ export default function App() {
     const el = e.currentTarget;
     const cardSlotWidth = el.offsetWidth * 0.78 + 16;
     const idx = Math.round(el.scrollLeft / cardSlotWidth);
-    setCenterEventIndex(Math.max(0, Math.min(idx, MALL_EVENTS.length - 1)));
+    const activeLen = MALL_EVENTS.filter(ev => getEventStatus(ev) !== 'ended').length;
+    setCenterEventIndex(Math.max(0, Math.min(idx, activeLen - 1)));
   };
 
   const handleCarouselCardClick = (index: number) => {
     if (index === centerEventIndex) {
-      const ev = MALL_EVENTS[index];
+      const activeEvents = MALL_EVENTS.filter(ev => getEventStatus(ev) !== 'ended');
+      const ev = activeEvents[index];
       setSelectedEvent(ev);
       setEventScene('');
       setEventItinerary(null);
@@ -294,6 +323,109 @@ export default function App() {
 
   const scrollEvents = (_direction: 'left' | 'right') => {
     // unused; scroll is handled by handleCarouselCardClick
+  };
+
+  // 场景筛选：跳到最匹配的活动
+  const handleSceneFilter = (scene: string) => {
+    const next = eventSceneFilter === scene ? '' : scene;
+    setEventSceneFilter(next);
+    if (!next) return;
+    const activeEvents = MALL_EVENTS.filter(e => getEventStatus(e) !== 'ended');
+    const bestIdx = (() => {
+      let i = activeEvents.findIndex(e => e.scenes.includes(next) && getEventStatus(e) === 'ongoing');
+      if (i >= 0) return i;
+      i = activeEvents.findIndex(e => e.scenes.includes(next) && getEventStatus(e) === 'future');
+      if (i >= 0) return i;
+      return activeEvents.findIndex(e => e.scenes.includes(next));
+    })();
+    if (bestIdx >= 0) {
+      setCenterEventIndex(bestIdx);
+      const el = eventsScrollRef.current;
+      if (el) {
+        const cardSlotWidth = el.offsetWidth * 0.78 + 16;
+        el.scrollTo({ left: bestIdx * cardSlotWidth, behavior: 'smooth' });
+      }
+    }
+  };
+
+  // 动态时机 banner 文案
+  const getSmartBanner = () => {
+    const now = new Date();
+    const hour = now.getHours();
+    const day = now.getDay();
+    const isWeekend = day === 0 || day === 6;
+    const ongoing = MALL_EVENTS.filter(e => getEventStatus(e) === 'ongoing');
+    if (ongoing.length > 0) {
+      const e = ongoing[0];
+      const daysLeft = Math.floor((e.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysLeft <= 2) return { icon: '⚡', text: `快闪结束倒计时 ${daysLeft + 1} 天，今天是最后机会`, color: 'bg-rose-50 border-rose-100 text-rose-700' };
+      if (!isWeekend && hour >= 13 && hour <= 18) return { icon: '✨', text: '工作日下午，现在是人流最低的黄金时段', color: 'bg-emerald-50 border-emerald-100 text-emerald-700' };
+      if (isWeekend && hour >= 11 && hour <= 14) return { icon: '👥', text: '周末人流高峰，建议 15:00 后再来更宽松', color: 'bg-amber-50 border-amber-100 text-amber-700' };
+      if (hour >= 19) return { icon: '🌙', text: '商场 22:00 关闭，今晚还有 2-3 小时可以体验', color: 'bg-indigo-50 border-indigo-100 text-indigo-700' };
+      return { icon: '🎯', text: '进行中的活动今天就可以去，越早去体验越好', color: 'bg-emerald-50 border-emerald-100 text-emerald-700' };
+    }
+    const future = MALL_EVENTS.filter(e => getEventStatus(e) === 'future');
+    if (future.length > 0) {
+      const daysUntil = Math.floor((future[0].startDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      return { icon: '🔔', text: `下一个活动 ${daysUntil} 天后开幕，可以提前购票或关注`, color: 'bg-indigo-50 border-indigo-100 text-indigo-700' };
+    }
+    return null;
+  };
+
+  const quickPlanPresets = [
+    {
+      id: 'quick-2h',
+      emoji: '⚡',
+      label: '2小时精华',
+      desc: '适合下班后或顺路来一趟',
+      scene: '自己逛逛',
+      durationHours: 2,
+      budget: 200,
+    },
+    {
+      id: 'date',
+      emoji: '💞',
+      label: '约会下午',
+      desc: '活动 + 咖啡 + 晚饭',
+      scene: '两个人约会',
+      durationHours: 3,
+      budget: 400,
+    },
+    {
+      id: 'family',
+      emoji: '🧒',
+      label: '带娃半天',
+      desc: '轻松一点，不要太赶',
+      scene: '带小孩来玩',
+      durationHours: 3,
+      budget: 300,
+    },
+    {
+      id: 'friends',
+      emoji: '🎉',
+      label: '朋友聚会',
+      desc: '先逛再吃，比较热闹',
+      scene: '朋友聚会',
+      durationHours: 4,
+      budget: 350,
+    },
+  ] as const;
+
+  useEffect(() => {
+    if (mode !== 'home') return;
+
+    const timer = window.setInterval(() => {
+      setHomeSceneIndex((prev) => (prev + 1) % Math.max(quickPlanPresets.length - 1, 1));
+    }, 3200);
+
+    return () => window.clearInterval(timer);
+  }, [mode, quickPlanPresets.length]);
+
+  const getTodayToneClasses = (tone: TodaySummary['statuses'][number]['tone']) => {
+    if (tone === 'green') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+    if (tone === 'amber') return 'bg-amber-50 text-amber-700 border-amber-100';
+    if (tone === 'indigo') return 'bg-indigo-50 text-indigo-700 border-indigo-100';
+    return 'bg-neutral-50 text-neutral-700 border-neutral-200';
   };
 
   const startCamera = async () => {
@@ -319,6 +451,60 @@ export default function App() {
       videoRef.current.play().catch(e => console.error("Video play error:", e));
     }
   }, [stream, mode]);
+
+  useEffect(() => {
+    let mounted = true;
+    getTodaySummary()
+      .then((data) => {
+        if (mounted) setTodaySummary(data);
+      })
+      .catch((err) => {
+        console.error(err);
+        if (mounted) {
+          setTodaySummary({
+            headline: '今天适合轻松来逛',
+            subheadline: '如果你时间不多，建议优先看活动或先吃饭，不要把路线排太满。',
+            statuses: [
+              { label: '今日活动', value: '可以先看 L1 中庭', tone: 'green' },
+              { label: '餐饮状态', value: '错峰更舒服', tone: 'amber' },
+              { label: '商场人流', value: '整体可接受', tone: 'indigo' },
+            ],
+            recommendedAction: '先看活动，再顺路去 B1 或 L3 吃饭，会更轻松。',
+            rightNow: '先看一个重点内容，再顺路吃饭会最舒服。',
+            avoidNow: '不要把路线排太满，也别一上来就冲最热门的店。',
+            bestFor: ['2 小时轻量逛', '下班后顺路来', '约会碰面'],
+            highlights: [
+              {
+                title: '今天先看什么',
+                desc: '先从活动重点开始最不容易踩坑。',
+                action: 'events',
+                actionLabel: '查看活动',
+              },
+              {
+                title: '今天怎么吃更顺',
+                desc: '想少排队，就把用餐安排在活动之后。',
+                action: 'dining',
+                actionLabel: '去看美食推荐',
+              },
+              {
+                title: '直接帮我安排',
+                desc: '如果你只想要一条今天最值的路线，我可以直接排给你。',
+                action: 'chat',
+                actionLabel: '让 Cadence 安排',
+                query: '帮我安排今天在中洲湾的路线',
+              },
+            ],
+          });
+        }
+      })
+      .finally(() => {
+        if (mounted) setTodayLoading(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const stopCamera = () => {
     if (stream) {
@@ -394,10 +580,10 @@ export default function App() {
 
   // 停车助手功能已停用 ── streamText, proactive timers, handleParkingSubmit
 
-  const sendChatMessage = async (msg: string) => {
+  const sendChatMessage = async (msg: string, options?: { resetHistory?: boolean }) => {
     if (!msg.trim()) return;
     const userMsg: ChatMsg = { role: 'user', text: msg.trim() };
-    const nextHistory = [...fullChatHistory, userMsg];
+    const nextHistory = options?.resetHistory ? [userMsg] : [...fullChatHistory, userMsg];
     setFullChatHistory(nextHistory);
     setChatInput('');
     setLoading(true);
@@ -422,20 +608,116 @@ export default function App() {
       }, 20);
     } catch (err) {
       console.error(err);
-      setFullChatHistory([...nextHistory, { role: 'ai', text: '抱歉，遇到了点问题，请稍后再试。' }]);
+      try {
+        const fallbackText = await getChatResponse(msg.trim());
+        setFullChatHistory([
+          ...nextHistory,
+          {
+            role: 'ai',
+            text: fallbackText || '我这会儿有点忙，但你可以换个问法再试试。',
+            suggestions: ['今天有什么活动', '推荐一家餐厅', '帮我安排今天'],
+          },
+        ]);
+      } catch (fallbackErr) {
+        console.error(fallbackErr);
+        setFullChatHistory([
+          ...nextHistory,
+          {
+            role: 'ai',
+            text: '抱歉，Cadence 现在有点忙。你可以先看 Today 状态，或者试试「一键成行」。',
+            suggestions: ['今天值不值得来', '我有 2 小时', '推荐一家餐厅'],
+          },
+        ]);
+      }
     } finally {
       setLoading(false);
       setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     }
   };
 
+  const openPlanResult = async (params: {
+    title: string;
+    subtitle: string;
+    scene: string;
+    durationHours: number;
+    budget?: number;
+  }) => {
+    const plan = await generateDayPlan({
+      scene: params.scene,
+      durationHours: params.durationHours,
+      budget: params.budget,
+    });
+
+    setActivePlan({
+      title: params.title,
+      subtitle: params.subtitle,
+      plan,
+    });
+    setMode('plan');
+  };
+
+  const handleQuickPlan = async (preset: typeof quickPlanPresets[number]) => {
+    setQuickPlanLoadingId(preset.id);
+    try {
+      await openPlanResult({
+        title: preset.label,
+        subtitle: preset.desc,
+        scene: preset.scene,
+        durationHours: preset.durationHours,
+        budget: preset.budget,
+      });
+    } catch (err) {
+      console.error(err);
+      setActivePlan({
+        title: preset.label,
+        subtitle: preset.desc,
+        plan: {
+          summary: '我先给你一个轻量建议：先去 L1 看重点活动，再顺路去 B1 或 L3 吃饭，这样今天最不容易踩坑。',
+          steps: ['先去 L1 中庭看重点活动', '再去 B1 或 L3 安排用餐', '最后留一点时间轻松逛逛'],
+          tip: '时间不多的时候，不要把路线排得太满。',
+          suggestions: ['换一个场景试试', '帮我推荐餐厅', '今天有什么活动'],
+          action: 'dining',
+          actionLabel: '去看美食推荐',
+        },
+      });
+      setMode('plan');
+    } finally {
+      setQuickPlanLoadingId(null);
+    }
+  };
+
+  const handleTodayHighlight = async (highlight: TodaySummary['highlights'][number]) => {
+    if (highlight.action === 'chat') {
+      setQuickPlanLoadingId('today-highlight');
+      try {
+        await openPlanResult({
+          title: 'Today 路线建议',
+          subtitle: '基于今天的节奏，直接给你一条更值的路线',
+          scene: '自己逛逛',
+          durationHours: 2,
+          budget: 250,
+        });
+      } finally {
+        setQuickPlanLoadingId(null);
+      }
+      return;
+    }
+
+    if (highlight.action === 'dining' || highlight.action === 'events') {
+      handleModeChange(highlight.action);
+    }
+  };
+
+  const openFreshChat = async (msg: string) => {
+    setMode('chat');
+    await sendChatMessage(msg, { resetHistory: true });
+  };
+
   const handleHomeChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
     const msg = chatInput.trim();
-    setFullChatHistory([]);
-    setMode('chat');
-    await sendChatMessage(msg);
+    await openFreshChat(msg);
   };
 
   const handleModeChange = (newMode: Mode) => {
@@ -501,35 +783,36 @@ export default function App() {
     }
   };
 
+  const lastUserPrompt = fullChatHistory.filter(m => m.role === 'user').slice(-1)[0]?.text ?? '';
+  const homePrimaryPreset = quickPlanPresets[0];
+  const homeSpotlightPreset = quickPlanPresets[(homeSceneIndex % Math.max(quickPlanPresets.length - 1, 1)) + 1];
+  const smartBanner = getSmartBanner();
+  const homeStatusItems = todaySummary?.statuses.slice(0, 3) ?? [];
+  const homeChatSuggestions = [
+    todaySummary?.highlights[0]?.query ?? '今天有什么活动？',
+    '现在适合先吃饭还是先逛？',
+  ];
+
   return (
-    <div className="min-h-screen bg-[#FAF9F6] text-[#1A1A1A] font-sans selection:bg-indigo-100 overflow-x-hidden">
+    <div className="min-h-screen bg-[#F7F5F1] text-[#1A1A1A] font-sans selection:bg-indigo-100 overflow-x-hidden">
       {/* Background Orbs */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-100/50 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-amber-100/30 blur-[120px] rounded-full" />
+        <div className="absolute top-[-12%] left-[-10%] w-[48%] h-[44%] bg-violet-200/35 blur-[150px] rounded-full" />
+        <div className="absolute top-[18%] right-[-12%] w-[42%] h-[36%] bg-sky-200/26 blur-[150px] rounded-full" />
+        <div className="absolute bottom-[-14%] left-[12%] w-[38%] h-[30%] bg-fuchsia-100/26 blur-[145px] rounded-full" />
+        <div className="absolute bottom-[-16%] right-[-10%] w-[42%] h-[34%] bg-amber-100/18 blur-[150px] rounded-full" />
       </div>
 
       {/* Header */}
-      <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b border-black/5 px-6 py-3 flex items-center justify-between shadow-sm">
+      <header className="sticky top-0 z-50 bg-white/35 backdrop-blur-2xl border-b border-white/30 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4 cursor-pointer" onClick={() => handleModeChange('home')}>
-          <div className="flex items-center gap-2.5 bg-white px-3 py-2 rounded-2xl shadow-md border border-black/5">
+          <div className="flex items-center gap-2.5 px-1 py-1.5">
             <img 
               src="/CFutureCity-logo.png" 
               alt="C Future City Logo" 
-              className="h-8 w-8 object-contain flex-shrink-0"
+              className="h-8 w-8 object-contain flex-shrink-0 opacity-95"
             />
-            <div className="w-px h-6 bg-black/10 flex-shrink-0" />
-            <div className="flex flex-col justify-center">
-              <span className="text-sm font-bold tracking-tight text-indigo-600 leading-none">Cadence AI</span>
-              <div className="flex items-center gap-1 mt-0.5">
-                <span className="text-[9px] text-black/30 font-medium leading-none">by</span>
-                <img
-                  src="/Neuron-logo-white.png"
-                  alt="NEURON"
-                  className="h-2 w-auto object-contain brightness-0 opacity-30"
-                />
-              </div>
-            </div>
+            <span className="text-sm font-bold tracking-tight text-[#1A1A1A] leading-none">C Future City</span>
           </div>
         </div>
         {mode !== 'home' && (
@@ -543,9 +826,9 @@ export default function App() {
       </header>
 
       <main className={cn(
-        "max-w-2xl mx-auto p-6 relative z-10",
+        "max-w-2xl mx-auto px-4 py-5 sm:p-6 relative z-10",
         mode === 'home' ? "h-[calc(100dvh-60px)] flex flex-col overflow-hidden" : "",
-        mode === 'dining' ? "" : "min-h-screen pb-8"
+        mode === 'home' || mode === 'dining' ? "" : "min-h-screen pb-8"
       )}>
         <AnimatePresence mode="wait">
           {mode === 'home' && (
@@ -554,144 +837,426 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="flex-1 flex flex-col justify-center gap-6 py-4"
+              className="flex-1 grid grid-rows-[auto,1fr,auto] gap-3 sm:gap-4 py-2 sm:py-4 min-h-0"
             >
-              {/* Title */}
-              <div className="text-center space-y-2">
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
+              <div className="flex items-center justify-between pt-1 sm:pt-2">
+                <div className="space-y-1">
+                  <motion.p
+                    initial={{ opacity: 0, y: -6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="text-[11px] font-medium tracking-[0.4em] text-[#1A1A1A]/30 uppercase ml-[0.4em]"
+                    className="text-[10px] uppercase tracking-[0.28em] font-bold text-[#1A1A1A]/28"
                 >
-                  欢迎来到
-                </motion.div>
+                    Cadence
+                  </motion.p>
                 <motion.h2 
-                  initial={{ opacity: 0, scale: 0.95 }}
+                    initial={{ opacity: 0, scale: 0.97 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.1 }}
-                  className="text-5xl font-bold tracking-tighter text-[#1A1A1A] leading-tight"
+                    transition={{ delay: 0.08 }}
+                    className="text-[2.45rem] sm:text-[3rem] font-bold tracking-[-0.065em] text-[#1A1A1A] leading-[0.92]"
                 >
-                  <span className="font-serif italic bg-gradient-to-br from-indigo-700 via-indigo-500 to-indigo-400 bg-clip-text text-transparent drop-shadow-sm">
-                    C Future City
+                    <span className="font-serif italic bg-gradient-to-br from-[#5649A6] via-[#5C82FF] to-[#AE8BFF] bg-clip-text text-transparent">
+                      Cadence
                   </span>
                 </motion.h2>
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.2 }}
-                  className="text-sm text-[#1A1A1A]/40 leading-relaxed px-4"
+                </div>
+                <button
+                  onClick={() => handleModeChange('today')}
+                  className="px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-full bg-white/36 backdrop-blur-xl border border-white/45 shadow-[0_16px_40px_rgba(111,123,255,0.12)] text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/65 active:scale-95 transition-all"
                 >
-                  你的 AI 逛街助理，帮你找美食、看活动、搭穿搭
-                </motion.p>
+                  Today
+                </button>
               </div>
 
-              {/* Chat Input */}
-              <div className="space-y-3">
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.16 }}
+                className="relative flex items-center justify-center min-h-0 px-1 sm:px-0"
+              >
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-[88%] sm:w-[78%] h-[78%] rounded-full bg-[radial-gradient(circle,_rgba(141,128,255,0.14),_rgba(255,255,255,0))] blur-3xl" />
+                </div>
+
+                {smartBanner && (
+                  <motion.div
+                    animate={{ y: [0, -5, 0] }}
+                    transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
+                    className="absolute top-[7%] sm:top-[17%] left-1 sm:left-0 max-w-[34%] sm:max-w-[46%] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-[1.1rem] sm:rounded-[1.35rem] bg-white/34 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.1)]"
+                  >
+                    <p className="text-[9px] sm:text-[10px] font-semibold text-[#1A1A1A]/70 leading-snug">
+                      {smartBanner.icon} {smartBanner.text}
+                    </p>
+                  </motion.div>
+                )}
+
+                <motion.button
+                  animate={{ y: [0, -4, 0] }}
+                  transition={{ duration: 6, repeat: Infinity, ease: 'easeInOut' }}
+                  onClick={() => handleQuickPlan(homePrimaryPreset)}
+                  disabled={quickPlanLoadingId !== null || todayLoading}
+                  className={cn(
+                    "relative w-full max-w-[22rem] sm:max-w-[30rem] overflow-hidden rounded-[1.9rem] sm:rounded-[2.25rem] border border-white/50 bg-white/40 backdrop-blur-[22px] px-4 sm:px-5 py-4 sm:py-6 text-left shadow-[0_26px_70px_rgba(103,97,191,0.14)] active:scale-[0.985] transition-all",
+                    quickPlanLoadingId === homePrimaryPreset.id && "opacity-75"
+                  )}
+                >
+                  <div className="absolute inset-0 bg-[linear-gradient(140deg,rgba(255,255,255,0.58),rgba(255,255,255,0.14)_55%,rgba(176,162,255,0.18))]" />
+                  <div className="absolute -right-10 top-8 h-24 sm:h-28 w-24 sm:w-28 rounded-full bg-violet-200/30 blur-3xl" />
+                  <div className="absolute -left-8 bottom-3 h-20 sm:h-24 w-20 sm:w-24 rounded-full bg-sky-200/25 blur-3xl" />
+
+                  <div className="relative space-y-4 sm:space-y-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-2 min-w-0">
+                        <p className="text-[10px] uppercase tracking-[0.22em] font-bold text-[#1A1A1A]/28">
+                          Today feels like
+                        </p>
+                        {todayLoading ? (
+                          <div className="h-16 flex items-center">
+                            <Loader2 size={18} className="animate-spin text-indigo-400" />
+                          </div>
+                        ) : (
+                          <>
+                            <h3 className="text-[1.45rem] sm:text-[1.85rem] font-bold tracking-[-0.05em] text-[#1A1A1A] leading-[1.02]">
+                              {todaySummary?.headline ?? '今天适合轻松来逛'}
+                            </h3>
+                            <p className="text-[12px] sm:text-[13px] leading-relaxed text-[#1A1A1A]/50 max-w-[14rem] sm:max-w-[18rem]">
+                              {todaySummary?.recommendedAction ?? '先给你一条今天可以直接走的轻量路线。'}
+                            </p>
+                          </>
+                        )}
+                      </div>
+                      <div className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-full bg-black/[0.04] text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/54 whitespace-nowrap">
+                        {homePrimaryPreset.emoji} {homePrimaryPreset.label}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {homeStatusItems.map((item) => (
+                        <span
+                          key={item.label}
+                          className="px-2.5 sm:px-3 py-1.5 rounded-full bg-white/34 border border-white/45 text-[9px] sm:text-[10px] font-semibold text-[#1A1A1A]/58"
+                        >
+                          {item.label} · {item.value}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold text-[#1A1A1A]/38">直接帮我安排</p>
+                        <p className="text-[11px] sm:text-[12px] text-[#1A1A1A]/58 mt-0.5">
+                          {homePrimaryPreset.desc}
+                        </p>
+                      </div>
+                      <div className="w-11 h-11 rounded-[1.1rem] bg-[#1A1A1A] text-white flex items-center justify-center shadow-[0_10px_24px_rgba(0,0,0,0.16)] flex-shrink-0">
+                        {quickPlanLoadingId === homePrimaryPreset.id ? (
+                          <Loader2 size={16} className="animate-spin text-white/80" />
+                        ) : (
+                          <Navigation size={16} />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </motion.button>
+
+                <motion.button
+                  animate={{ y: [0, -8, 0] }}
+                  transition={{ duration: 5.6, repeat: Infinity, ease: 'easeInOut' }}
+                  onClick={() => handleModeChange('events')}
+                  className="absolute top-[13%] sm:top-[23%] right-1 sm:right-0 w-[6.5rem] sm:w-[8.9rem] px-2.5 sm:px-3.5 py-2.5 sm:py-3 rounded-[1.2rem] sm:rounded-[1.5rem] bg-white/30 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.11)] text-left active:scale-[0.98] transition-all"
+                >
+                  <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/72">
+                    <CalendarCheck size={12} />
+                    今天看什么
+                  </div>
+                  <p className="hidden sm:block text-[10px] text-[#1A1A1A]/42 leading-snug mt-1.5">
+                    先看今天最值得去的活动
+                  </p>
+                </motion.button>
+
+                <motion.button
+                  animate={{ y: [0, 7, 0] }}
+                  transition={{ duration: 6.4, repeat: Infinity, ease: 'easeInOut' }}
+                  onClick={() => handleQuickPlan(homeSpotlightPreset)}
+                  disabled={quickPlanLoadingId !== null}
+                  className="absolute left-1 sm:left-0 bottom-[16%] sm:bottom-[18%] w-[6.9rem] sm:w-[9.4rem] px-2.5 sm:px-3.5 py-2.5 sm:py-3 rounded-[1.2rem] sm:rounded-[1.55rem] bg-white/30 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.11)] text-left active:scale-[0.98] transition-all"
+                >
+                  <p className="text-[9px] sm:text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25">
+                    Spotlight
+                  </p>
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={homeSpotlightPreset.id}
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.22 }}
+                      className="mt-1.5"
+                    >
+                      <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[12px] font-semibold text-[#1A1A1A]/74">
+                        <span>{homeSpotlightPreset.emoji}</span>
+                        <span>{homeSpotlightPreset.label}</span>
+                      </div>
+                      <p className="hidden sm:block text-[10px] text-[#1A1A1A]/42 leading-snug mt-1">
+                        {homeSpotlightPreset.desc}
+                      </p>
+                    </motion.div>
+                  </AnimatePresence>
+                </motion.button>
+
+                <motion.button
+                  animate={{ y: [0, -6, 0] }}
+                  transition={{ duration: 5.9, repeat: Infinity, ease: 'easeInOut' }}
+                  onClick={() => handleModeChange(lastUserPrompt ? 'chat' : 'dining')}
+                  className="absolute right-1 sm:right-3 bottom-[6%] sm:bottom-0 w-[7.1rem] sm:w-[10rem] px-2.5 sm:px-3.5 py-2.5 sm:py-3 rounded-[1.2rem] sm:rounded-[1.55rem] bg-white/28 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.11)] text-left active:scale-[0.98] transition-all"
+                >
+                  <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/72">
+                    {lastUserPrompt ? <Sparkles size={12} /> : <Utensils size={12} />}
+                    {lastUserPrompt ? '继续对话' : '现在吃什么'}
+                  </div>
+                  <p className="hidden sm:block text-[10px] text-[#1A1A1A]/42 leading-snug mt-1.5 truncate">
+                    {lastUserPrompt || '顺路找一家更适合现在的餐厅'}
+                  </p>
+                </motion.button>
+              </motion.div>
+
+              <div className="space-y-2.5 sm:space-y-3 pb-1 sm:pb-2">
                 <form onSubmit={handleHomeChatSubmit} className="relative group">
-                  <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500/10 to-amber-500/10 rounded-[2rem] blur opacity-0 group-focus-within:opacity-100 transition duration-500" />
+                  <div className="absolute -inset-1 rounded-[2rem] bg-gradient-to-r from-violet-300/14 via-sky-300/12 to-amber-200/12 blur-md opacity-0 group-focus-within:opacity-100 transition duration-500" />
+                  <div className="relative rounded-[1.6rem] sm:rounded-[2rem] border border-white/50 bg-white/40 backdrop-blur-[22px] shadow-[0_18px_48px_rgba(103,97,191,0.11)]">
                   <input 
                     type="text"
-                    placeholder="随便问点什么..."
+                      placeholder="今天想怎么逛？"
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
-                    className="w-full relative glass rounded-[2rem] py-5 pl-7 pr-16 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 focus:bg-white transition-all font-medium text-[#1A1A1A] text-base shadow-sm"
+                      className="w-full bg-transparent rounded-[1.6rem] sm:rounded-[2rem] py-3.5 sm:py-4 pl-5 sm:pl-6 pr-16 focus:outline-none font-medium text-[#1A1A1A] text-[14px] sm:text-[15px] placeholder:text-black/24"
                   />
                   <button 
                     disabled={loading || !chatInput.trim()}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 bg-[#1A1A1A] text-white rounded-2xl flex items-center justify-center hover:bg-black disabled:opacity-20 transition-all shadow-lg active:scale-95"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-11 sm:h-11 bg-[#1A1A1A] text-white rounded-[1rem] sm:rounded-[1.15rem] flex items-center justify-center disabled:opacity-20 transition-all shadow-[0_12px_24px_rgba(0,0,0,0.16)] active:scale-95"
                   >
-                    {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                      {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={17} />}
                   </button>
+                  </div>
                 </form>
 
-                {/* 继续之前的对话 */}
-                {fullChatHistory.length > 0 && (
-                  <motion.button
-                    initial={{ opacity: 0, y: 6 }}
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:overflow-x-auto no-scrollbar pb-1">
+                  {homeChatSuggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={async () => {
+                        setChatInput('');
+                        await openFreshChat(suggestion);
+                      }}
+                      className="px-3.5 py-2 rounded-full bg-white/28 backdrop-blur-xl border border-white/45 text-[11px] font-medium text-[#1A1A1A]/56 whitespace-nowrap shadow-[0_12px_28px_rgba(103,97,191,0.09)] active:scale-95 transition-all"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+
+                  {[
+                    { mode: 'style' as const, label: '穿搭建议', icon: Shirt },
+                    { mode: 'member' as const, label: '会员中心', icon: Crown },
+                  ].map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.mode}
+                        onClick={() => handleModeChange(item.mode)}
+                        className="px-3.5 py-2 rounded-full bg-white/24 backdrop-blur-xl border border-white/45 text-[11px] font-medium text-[#1A1A1A]/54 whitespace-nowrap shadow-[0_12px_28px_rgba(103,97,191,0.08)] active:scale-95 transition-all flex items-center gap-1.5"
+                      >
+                        <Icon size={12} />
+                        {item.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {mode === 'today' && (
+            <motion.div
+              key="today"
+              initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    onClick={() => setMode('chat')}
-                    className="w-full flex items-center gap-3 px-4 py-3 bg-white rounded-2xl border border-black/8 shadow-sm hover:border-indigo-200 hover:shadow-md transition-all active:scale-[0.98] text-left"
-                  >
-                    <div className="w-8 h-8 bg-indigo-50 rounded-xl flex items-center justify-center flex-shrink-0">
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-4"
+            >
+              {todaySummary && (
+                <>
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">Today</p>
+                    <h3 className="text-2xl font-bold tracking-tight text-[#1A1A1A]">{todaySummary.headline}</h3>
+                    <p className="text-sm text-[#1A1A1A]/38 leading-relaxed">{todaySummary.subheadline}</p>
+                  </div>
+
+                  <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-2xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
+                        <TrendingUp size={16} className="text-indigo-500" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-sm font-bold text-[#1A1A1A]">今天的建议</p>
+                        <p className="text-[12px] text-[#1A1A1A]/55 leading-relaxed">{todaySummary.recommendedAction}</p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      {todaySummary.statuses.map((item) => (
+                        <div
+                          key={item.label}
+                          className={cn("rounded-2xl border px-3 py-3", getTodayToneClasses(item.tone))}
+                        >
+                          <p className="text-[9px] font-bold uppercase tracking-[0.08em] opacity-55">{item.label}</p>
+                          <p className="text-[11px] font-semibold leading-snug mt-1">{item.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3">
+                    <div className="bg-white rounded-2xl border border-black/8 p-4 shadow-sm">
+                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25 mb-2">此刻更适合</p>
+                      <p className="text-[13px] font-semibold text-[#1A1A1A] leading-relaxed">{todaySummary.rightNow}</p>
+                    </div>
+                    <div className="bg-white rounded-2xl border border-black/8 p-4 shadow-sm">
+                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25 mb-2">现在先别急着做</p>
+                      <p className="text-[13px] font-semibold text-[#1A1A1A] leading-relaxed text-[#1A1A1A]/70">{todaySummary.avoidNow}</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">今天适合谁来</p>
+                      <Users size={14} className="text-black/20" />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {todaySummary.bestFor.map((item) => (
+                        <span
+                          key={item}
+                          className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-black/[0.03] text-[#1A1A1A]/55"
+                        >
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">从这里继续</p>
+                    <div className="space-y-2">
+                      {todaySummary.highlights.map((item) => (
+                        <button
+                          key={item.title}
+                          onClick={() => handleTodayHighlight(item)}
+                          className="w-full flex items-center gap-3 p-4 rounded-2xl bg-white border border-black/8 shadow-sm text-left active:scale-[0.98] transition-all"
+                        >
+                          <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
                       <Sparkles size={14} className="text-indigo-500" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold text-[#1A1A1A]">继续聊天</p>
-                      <p className="text-[11px] text-[#1A1A1A]/35 truncate">
-                        {fullChatHistory.filter(m => m.role === 'user').slice(-1)[0]?.text ?? ''}
-                      </p>
+                            <p className="text-[13px] font-bold text-[#1A1A1A]">{item.title}</p>
+                            <p className="text-[11px] text-[#1A1A1A]/40 mt-0.5 leading-relaxed">{item.desc}</p>
                     </div>
-                    <ChevronRight size={14} className="text-black/20 flex-shrink-0" />
-                  </motion.button>
-                )}
+                          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#1A1A1A]/40 flex-shrink-0">
+                            <span>{item.actionLabel}</span>
+                            <ChevronRight size={13} />
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          )}
 
-                {/* Suggested prompts */}
+          {mode === 'plan' && activePlan && (
                 <motion.div
-                  initial={{ opacity: 0, y: 6 }}
+              key="plan"
+              initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3 }}
-                  className="flex flex-wrap gap-2 px-1"
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFullChatHistory([{
-                        role: 'ai',
-                        text: '你好！想规划一条商场游览路线？\n告诉我你有多少时间、几个人、偏重吃喝还是购物还是看展，我来帮你安排最合适的行程 ✨',
-                        suggestions: ['我有2小时，想吃饭+逛逛', '3小时，带小孩来玩', '下午4点到，想看展+吃晚饭'],
-                      }]);
-                      setMode('chat');
-                    }}
-                    className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-600 hover:bg-indigo-100 transition-all shadow-sm active:scale-95"
-                  >
-                    🗺️ 路线规划
-                  </button>
-                  {[
-                    '今天有什么活动？',
-                    '推荐一家适合约会的餐厅',
-                    '附近有哪些停车场？',
-                    '商场几点关门？',
-                  ].map((prompt) => (
-                    <button
-                      key={prompt}
-                      type="button"
-                      onClick={() => setChatInput(prompt)}
-                      className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-white border border-black/8 text-[#1A1A1A]/50 hover:text-[#1A1A1A]/80 hover:border-black/20 transition-all shadow-sm active:scale-95"
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </motion.div>
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-4"
+            >
+              <div className="space-y-1">
+                <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">Plan</p>
+                <h3 className="text-2xl font-bold tracking-tight text-[#1A1A1A]">{activePlan.title}</h3>
+                <p className="text-sm text-[#1A1A1A]/38 leading-relaxed">{activePlan.subtitle}</p>
               </div>
 
-              {/* Feature bubbles */}
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.25 }}
-                className="space-y-2.5"
-              >
-                <div className="grid grid-cols-2 gap-2.5">
-                  {[
-                    { mode: 'dining' as const, emoji: '🍽️', title: '美食推荐', desc: 'AI 帮你选今天吃什么' },
-                    { mode: 'events' as const, emoji: '🎪', title: '活动一览', desc: '最新展览与互动活动' },
-                    { mode: 'style' as const, emoji: '👗', title: '穿搭建议', desc: '拍张照，AI 来搭配' },
-                    { mode: 'member' as const, emoji: '💎', title: '会员中心', desc: '积分、优惠券与专属权益' },
-                    // { mode: 'parking' as const, emoji: '🅿️', title: '停车助手', desc: 'AI 帮你找车位、预留停车' },  // 已停用
-                  ].map((item) => (
+              <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
+                    <Sparkles size={16} className="text-indigo-500" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-[#1A1A1A]">今天的路线建议</p>
+                    <p className="text-[12px] text-[#1A1A1A]/55 leading-relaxed">{activePlan.plan.summary}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-black/[0.025] border border-black/5 overflow-hidden">
+                  <div className="px-4 pt-3 pb-1 border-b border-black/5">
+                    <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">路线时间线</p>
+                  </div>
+                  <div className="px-4 py-2 space-y-0">
+                    {activePlan.plan.steps.map((step, i) => (
+                      <div key={i} className="flex items-start gap-3 py-2 border-b border-black/5 last:border-0">
+                        <div className="w-5 h-5 rounded-full bg-indigo-50 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <span className="text-[10px] font-black text-indigo-500">{i + 1}</span>
+                        </div>
+                        <p className="text-[12px] text-[#1A1A1A]/70 font-medium leading-snug">{step}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2 px-3.5 py-3 rounded-2xl bg-amber-50 border border-amber-100">
+                  <Quote size={13} className="text-amber-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-[12px] text-amber-900/65 leading-relaxed">{activePlan.plan.tip}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    onClick={() => {
+                    if (activePlan.plan.action === 'dining' || activePlan.plan.action === 'events') {
+                      handleModeChange(activePlan.plan.action);
+                    }
+                  }}
+                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-[#1A1A1A] text-white text-sm font-bold active:scale-[0.98] transition-all"
+                >
+                  <ChevronRight size={14} />
+                  {activePlan.plan.actionLabel ?? '继续下一步'}
+                  </button>
                     <button
-                      key={item.mode}
-                      onClick={() => handleModeChange(item.mode)}
-                      className="flex flex-col items-start gap-1.5 p-4 rounded-2xl bg-white border border-black/8 shadow-sm hover:shadow-md hover:border-black/15 transition-all active:scale-[0.97] text-left"
+                  onClick={async () => {
+                    const prompt = `${activePlan.title}，帮我继续细化这条路线`;
+                    await openFreshChat(prompt);
+                  }}
+                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-white border border-black/8 text-[#1A1A1A] text-sm font-bold shadow-sm active:scale-[0.98] transition-all"
+                >
+                  <Send size={14} />
+                  继续问 AI
+                    </button>
+              </div>
+
+              {activePlan.plan.suggestions.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {activePlan.plan.suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={async () => {
+                        await openFreshChat(suggestion);
+                      }}
+                      className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-white border border-black/8 text-[#1A1A1A]/55 shadow-sm active:scale-95 transition-all"
                     >
-                      <span className="text-2xl leading-none">{item.emoji}</span>
-                      <span className="text-sm font-bold text-[#1A1A1A]">{item.title}</span>
-                      <span className="text-[10px] text-[#1A1A1A]/35 leading-snug">{item.desc}</span>
+                      {suggestion}
                     </button>
                   ))}
                 </div>
-
-              </motion.div>
+              )}
             </motion.div>
           )}
 
@@ -1208,172 +1773,295 @@ export default function App() {
           )}
 
           {mode === 'events' && (
-            <motion.div
+            <motion.div 
               key="events"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
               className="pb-6"
             >
-              {/* ── Header ── */}
-              <div className="px-5 mb-5 space-y-1">
+              {(() => {
+                const activeEvents = MALL_EVENTS.filter(e => getEventStatus(e) !== 'ended');
+                const pastEvents = MALL_EVENTS.filter(e => getEventStatus(e) === 'ended');
+                const centeredEvent = activeEvents[centerEventIndex] ?? activeEvents[0];
+                const smartBanner = getSmartBanner();
+                const allScenes = [...new Set(activeEvents.flatMap(e => e.scenes))];
+                const sceneInsight = eventSceneFilter && centeredEvent?.sceneInsights?.[eventSceneFilter];
+                const upcomingSpotlight = activeEvents.find(e => getEventStatus(e) === 'future' && e.id !== centeredEvent?.id);
+
+                return (
+                  <>
+                    {/* ── Header ── */}
+                    <div className="px-5 mb-4">
+                      <div className="flex items-baseline justify-between">
                 <h3 className="text-2xl font-bold tracking-tight">精彩活动</h3>
-                <p className="text-[#1A1A1A]/40 text-sm">探索中洲湾 C Future City 的无限可能</p>
+                        <span className="text-[11px] text-[#1A1A1A]/30 font-medium">
+                          {activeEvents.length} 个进行中 / 即将开始
+                        </span>
+                      </div>
               </div>
 
-              {/* ── Carousel ── */}
-              <div
-                ref={eventsScrollRef}
-                onScroll={handleEventScroll}
-                className="flex gap-4 overflow-x-auto snap-x snap-mandatory pb-3 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-                style={{ paddingLeft: 'calc(11%)' }}
-              >
-                {MALL_EVENTS.map((event, i) => {
-                  const dist = Math.abs(i - centerEventIndex);
-                  const isCenter = dist === 0;
-                  const status = getEventStatus(event);
-                  return (
-                    <motion.div
-                      key={event.id}
-                      animate={{
-                        scale: isCenter ? 1 : 0.88,
-                        opacity: isCenter ? 1 : dist === 1 ? 0.5 : 0.28,
-                        filter: isCenter ? 'blur(0px)' : 'blur(2px)',
-                      }}
-                      transition={{ type: 'spring', stiffness: 380, damping: 34 }}
-                      className="w-[78%] flex-shrink-0 snap-center cursor-pointer"
-                      onClick={() => handleCarouselCardClick(i)}
-                    >
-                      <div className={cn(
-                        "rounded-3xl overflow-hidden bg-white",
-                        isCenter ? "shadow-[0_6px_28px_rgba(0,0,0,0.13)]" : "shadow-sm"
-                      )}>
-                        {/* Image */}
-                        <div className="relative h-56 overflow-hidden">
-                          <img
-                            src={event.image}
-                            alt={event.title}
-                            className={cn("w-full h-full object-cover", status === 'ended' && "grayscale")}
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
-                          {/* Status badge */}
-                          <div className="absolute top-3 left-3">
-                            <span className={cn(
-                              "px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest backdrop-blur-md",
-                              status === 'ongoing' && "bg-emerald-500/85 text-white",
-                              status === 'future' && "bg-indigo-500/85 text-white",
-                              status === 'ended' && "bg-black/40 text-white/70"
-                            )}>
-                              {status === 'ongoing' ? '进行中' : status === 'future' ? '即将开始' : '已结束'}
-                            </span>
-                          </div>
-                          {/* Countdown bottom-left */}
-                          <div className="absolute bottom-3 left-4">
-                            <span className={cn(
-                              "text-[11px] font-bold drop-shadow-sm",
-                              status === 'ongoing' && "text-emerald-300",
-                              status === 'future' && "text-indigo-200",
-                              status === 'ended' && "text-white/40"
-                            )}>
-                              {getEventCountdown(event)}
-                            </span>
-                          </div>
-                          {/* Tap hint bottom-right (center card only) */}
-                          {isCenter && (
-                            <div className="absolute bottom-3 right-4 flex items-center gap-1 text-white/60">
-                              <span className="text-[10px] font-medium">查看详情</span>
-                              <ChevronRight size={10} />
-                            </div>
-                          )}
-                        </div>
+                    {/* ── Smart timing banner ── */}
+                    {smartBanner && (
+                      <div className={cn("mx-5 mb-5 flex items-center gap-2 px-3 py-2 rounded-xl border text-[11px] font-medium", smartBanner.color)}>
+                        <span className="leading-none flex-shrink-0">{smartBanner.icon}</span>
+                        <p className="leading-snug">{smartBanner.text}</p>
+                      </div>
+                    )}
 
-                        {/* Info */}
-                        <div className="p-4 space-y-2">
-                          <h4 className="text-[14px] font-bold text-[#1A1A1A] leading-snug line-clamp-2">
-                            {event.title}
-                          </h4>
-                          <div className="flex items-center gap-1.5 text-[#1A1A1A]/40">
-                            <Clock size={10} />
-                            <span className="text-[11px] truncate">{event.time}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 text-[#1A1A1A]/40">
-                            <MapPin size={10} />
-                            <span className="text-[11px] truncate">{event.location.split(' ').slice(-1)[0]}</span>
-                          </div>
-                          <div className="flex flex-wrap gap-1 pt-0.5">
-                            {event.tags.slice(0, 2).map(tag => (
-                              <span key={tag} className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-black/5 text-black/40">{tag}</span>
-                            ))}
-                            {event.ticketInfo && (
-                              <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-500">{event.ticketInfo}</span>
+                    {/* ── 场景筛选 chips ── */}
+                    <div className="px-5 mb-5">
+                      <div className="flex gap-2 flex-wrap">
+                        {allScenes.map(scene => (
+                          <button
+                            key={scene}
+                            onClick={() => handleSceneFilter(scene)}
+                            className={cn(
+                              "text-[12px] font-semibold px-3.5 py-1.5 rounded-full transition-all active:scale-95",
+                              eventSceneFilter === scene
+                                ? "bg-[#1A1A1A] text-white"
+                                : "bg-white border border-black/10 text-[#1A1A1A]/50"
+                            )}
+                          >
+                            {scene === '带小孩来玩' ? '👨‍👩‍👧 ' : scene === '两个人约会' ? '👫 ' : scene === '朋友聚会' ? '👥 ' : '🚶 '}
+                            {scene}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* ── Carousel（只展示进行中 + 即将开始） ── */}
+                <div 
+                  ref={eventsScrollRef}
+                  onScroll={handleEventScroll}
+                      className="flex gap-4 overflow-x-auto snap-x snap-mandatory pb-3 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                      style={{ paddingLeft: 'calc(11%)' }}
+                    >
+                      {activeEvents.map((event, i) => {
+                        const dist = Math.abs(i - centerEventIndex);
+                        const isCenter = dist === 0;
+                        const status = getEventStatus(event);
+                        const sceneMatch = eventSceneFilter ? event.scenes.includes(eventSceneFilter) : true;
+                    return (
+                      <motion.div
+                        key={event.id}
+                            animate={{
+                              scale: isCenter ? 1 : 0.88,
+                              opacity: isCenter ? 1 : dist === 1 ? (sceneMatch ? 0.55 : 0.35) : 0.25,
+                              filter: isCenter ? 'blur(0px)' : 'blur(2px)',
+                            }}
+                            transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+                            className="w-[78%] flex-shrink-0 snap-center cursor-pointer"
+                            onClick={() => handleCarouselCardClick(i)}
+                          >
+                        <div className={cn(
+                              "rounded-3xl overflow-hidden bg-white",
+                              isCenter ? "shadow-[0_6px_28px_rgba(0,0,0,0.13)]" : "shadow-sm"
+                            )}>
+                              {/* Image */}
+                              <div className="relative h-56 overflow-hidden">
+                                <img
+                                  src={event.image}
+                                  alt={event.title}
+                                  className="w-full h-full object-cover"
+                                />
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
+                                {/* Status badge */}
+                                <div className="absolute top-3 left-3 flex items-center gap-1.5">
+                          <span className={cn(
+                                    "px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest backdrop-blur-md",
+                                    status === 'ongoing' ? "bg-emerald-500/85 text-white" : "bg-indigo-500/85 text-white"
+                                  )}>
+                                    {status === 'ongoing' ? '进行中' : '即将开始'}
+                          </span>
+                                  {event.hotTag && isCenter && (
+                                    <span className="px-2 py-1 rounded-full text-[9px] font-bold bg-rose-500/85 text-white backdrop-blur-md">
+                                      {event.hotTag}
+                                    </span>
+                                  )}
+                        </div>
+                                {/* Scene match glow for non-center */}
+                                {!isCenter && eventSceneFilter && sceneMatch && (
+                                  <div className="absolute inset-0 ring-2 ring-inset ring-indigo-400/40 rounded-3xl" />
+                                )}
+                                {/* Countdown */}
+                                <div className="absolute bottom-3 left-4">
+                                  <span className={cn(
+                                    "text-[11px] font-bold drop-shadow-sm",
+                                    status === 'ongoing' ? "text-emerald-300" : "text-indigo-200"
+                                  )}>
+                                    {getEventCountdown(event)}
+                                  </span>
+                            </div>
+                                {isCenter && (
+                                  <div className="absolute bottom-3 right-4 flex items-center gap-1 text-white/60">
+                                    <span className="text-[10px] font-medium">查看详情</span>
+                                    <ChevronRight size={10} />
+                                  </div>
                             )}
                           </div>
+                              {/* Card info — 只保留标题 + 地点，标签移除，减少密度 */}
+                              <div className="px-4 pt-3.5 pb-4 space-y-1.5">
+                                <h4 className="text-[14px] font-bold text-[#1A1A1A] leading-snug line-clamp-2">{event.title}</h4>
+                                <div className="flex items-center gap-1.5 text-[#1A1A1A]/35">
+                                  <MapPin size={10} />
+                                  <span className="text-[11px] truncate">{event.location.split(' ').slice(-1)[0]}</span>
+                                </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                      <div className="flex-shrink-0" style={{ width: 'calc(11% - 16px)' }} />
+                </div>
+
+                    {/* ── Dot indicators ── */}
+                    <div className="flex justify-center gap-1.5 mt-1.5">
+                      {activeEvents.map((_, i) => (
+                        <div
+                          key={i}
+                          className={cn(
+                            "h-1.5 rounded-full transition-all duration-300",
+                            i === centerEventIndex ? "w-5 bg-[#1A1A1A]" : "w-1.5 bg-[#1A1A1A]/15"
+                          )}
+                        />
+                      ))}
+              </div>
+
+                    {/* ── AI Tips：insight + tips 合并成一张卡，减少盒子数量 ── */}
+              <AnimatePresence mode="wait">
+                    <motion.div
+                        key={`tips-${centerEventIndex}-${eventSceneFilter}`}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                        transition={{ duration: 0.2 }}
+                        className="px-5 mt-5"
+                    >
+                        {centeredEvent && (() => {
+                          const st = getEventStatus(centeredEvent);
+                          const isSceneMode = !!(eventSceneFilter && sceneInsight);
+                          return (
+                      <div className={cn(
+                              "rounded-2xl p-4 space-y-3",
+                              isSceneMode ? "bg-[#1A1A1A]" : st === 'ongoing' ? "bg-emerald-50" : "bg-indigo-50"
+                            )}>
+                              {/* Insight 主句 */}
+                              <div className="flex items-start gap-2.5">
+                                <Sparkles size={13} className={cn(
+                                  "mt-0.5 flex-shrink-0",
+                                  isSceneMode ? "text-white/50" : st === 'ongoing' ? "text-emerald-500" : "text-indigo-500"
+                                )} />
+                        <div>
+                                  {isSceneMode && (
+                                    <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-white/40 mb-1">
+                                      {eventSceneFilter} · 专属建议
+                                    </p>
+                                  )}
+                                  <p className={cn(
+                                    "text-[12px] font-medium leading-relaxed",
+                                    isSceneMode ? "text-white/85" : "text-[#1A1A1A]/65"
+                                  )}>
+                                    {sceneInsight || centeredEvent.aiInsight}
+                                  </p>
                         </div>
                       </div>
-                    </motion.div>
-                  );
-                })}
-                {/* 末尾占位，让最后一张卡片能滚到中心（flex 末尾 padding 被浏览器裁剪，用空 div 代替） */}
-                <div className="flex-shrink-0" style={{ width: 'calc(11% - 16px)' }} />
-              </div>
 
-              {/* ── Dot indicators ── */}
-              <div className="flex justify-center gap-1.5 mt-1.5">
-                {MALL_EVENTS.map((_, i) => (
-                  <div
-                    key={i}
-                    className={cn(
-                      "h-1.5 rounded-full transition-all duration-300",
-                      i === centerEventIndex ? "w-5 bg-[#1A1A1A]" : "w-1.5 bg-[#1A1A1A]/15"
-                    )}
-                  />
-                ))}
-              </div>
-
-              {/* ── AI Tips (switches with centerEventIndex) ── */}
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={`tips-${centerEventIndex}`}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.2 }}
-                  className="px-5 mt-5 space-y-3"
-                >
-                  {(() => {
-                    const ev = MALL_EVENTS[centerEventIndex];
-                    const st = getEventStatus(ev);
-                    return (
-                      <>
-                        <div className={cn(
-                          "flex items-start gap-2.5 p-4 rounded-2xl",
-                          st === 'ongoing' ? "bg-emerald-50" : st === 'future' ? "bg-indigo-50" : "bg-neutral-100"
-                        )}>
-                          <Sparkles size={13} className={cn(
-                            "mt-0.5 flex-shrink-0",
-                            st === 'ongoing' ? "text-emerald-500" : st === 'future' ? "text-indigo-500" : "text-neutral-400"
-                          )} />
-                          <p className="text-[12px] font-medium text-[#1A1A1A]/65 leading-relaxed">{ev.aiInsight}</p>
-                        </div>
-
-                        {ev.aiTips.length > 0 && (
-                          <div className="space-y-2">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-black/25 px-0.5">Cadence 小贴士</p>
-                            {ev.aiTips.map((tip, ti) => (
-                              <div key={ti} className="flex items-start gap-2.5 px-3.5 py-3 bg-white rounded-xl border border-black/6 shadow-[0_1px_4px_rgba(0,0,0,0.04)]">
-                                <div className="w-5 h-5 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0 mt-0.5">
-                                  <span className="text-[10px]">💡</span>
-                                </div>
-                                <p className="text-[12px] text-[#1A1A1A]/60 leading-relaxed">{tip}</p>
-                              </div>
-                            ))}
+                              {/* Tips：分隔线 + 简洁列表，不再单独分盒子 */}
+                              {centeredEvent.aiTips.length > 0 && (
+                                <div className={cn(
+                                  "pt-3 border-t space-y-2",
+                                  isSceneMode ? "border-white/10" : "border-black/8"
+                                )}>
+                                  {centeredEvent.aiTips.map((tip, ti) => (
+                                    <div key={ti} className="flex items-start gap-2">
+                                      <span className={cn(
+                                        "text-[10px] mt-0.5 flex-shrink-0",
+                                        isSceneMode ? "text-white/30" : "text-black/25"
+                                      )}>•</span>
+                                      <p className={cn(
+                                        "text-[11px] leading-relaxed",
+                                        isSceneMode ? "text-white/60" : "text-[#1A1A1A]/50"
+                                      )}>{tip}</p>
                           </div>
-                        )}
-                      </>
-                    );
-                  })()}
-                </motion.div>
-              </AnimatePresence>
+                        ))}
+                      </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </motion.div>
+                    </AnimatePresence>
+
+                    {/* ── 即将登场 spotlight ── */}
+                    {upcomingSpotlight && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 12 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.15 }}
+                        className="mx-5 mt-6"
+                      >
+                        <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-black/25 mb-2.5">即将登场</p>
+                            <button
+                          onClick={() => { setSelectedEvent(upcomingSpotlight); setEventScene(''); setEventItinerary(null); }}
+                          className="w-full text-left flex items-center gap-3 p-3 rounded-2xl bg-indigo-50 border border-indigo-100 active:bg-indigo-100 transition-colors"
+                        >
+                          <div className="relative w-12 h-12 rounded-xl overflow-hidden flex-shrink-0">
+                            <img src={upcomingSpotlight.image} alt={upcomingSpotlight.title} className="w-full h-full object-cover" />
+                            <div className="absolute inset-0 bg-indigo-900/20" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[13px] font-bold text-[#1A1A1A] line-clamp-1">{upcomingSpotlight.title}</p>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <Timer size={10} className="text-indigo-400" />
+                              <span className="text-[11px] font-semibold text-indigo-600">{getEventCountdown(upcomingSpotlight)}</span>
+                              {upcomingSpotlight.hotTag && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600">{upcomingSpotlight.hotTag}</span>
+                              )}
+                            </div>
+                          </div>
+                          <ChevronRight size={15} className="text-indigo-300 flex-shrink-0" />
+                        </button>
+                      </motion.div>
+                    )}
+
+                    {/* ── 往期精彩 ── */}
+                    {pastEvents.length > 0 && (
+                      <div className="mx-5 mt-6">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-black/25 mb-2.5">往期精彩</p>
+                        <div className="space-y-2">
+                          {pastEvents.map(event => (
+                            <button
+                              key={event.id}
+                              onClick={() => { setSelectedEvent(event); setEventScene(''); setEventItinerary(null); }}
+                              className="w-full text-left flex items-center gap-3 px-3.5 py-3 bg-white rounded-xl border border-black/6 opacity-60 active:opacity-80 transition-opacity"
+                            >
+                              <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 grayscale">
+                                <img src={event.image} alt={event.title} className="w-full h-full object-cover" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[12px] font-semibold text-[#1A1A1A]/60 truncate">{event.title}</p>
+                                <p className="text-[10px] text-black/30 mt-0.5">{event.time}</p>
+                              </div>
+                              <div className="flex items-center gap-1 text-black/25 flex-shrink-0">
+                                <span className="text-[10px]">已结束</span>
+                                <ChevronRight size={12} />
+                              </div>
+                            </button>
+                          ))}
+                        <button
+                            onClick={() => { void openFreshChat('中洲湾最近还有哪些类似的手作或节日活动？'); }}
+                            className="w-full py-2.5 rounded-xl border border-dashed border-black/15 text-[11px] font-semibold text-[#1A1A1A]/35 flex items-center justify-center gap-1.5 active:bg-black/3 transition-all"
+                          >
+                            <Sparkles size={11} />
+                            问问 AI：之后还有类似活动吗？
+                        </button>
+                      </div>
+                      </div>
+                    )}
+                  </>
+                  );
+                })()}
 
               {/* ── Event Detail Modal ── */}
               <AnimatePresence>
@@ -1403,18 +2091,18 @@ export default function App() {
                         {(() => {
                           const st = getEventStatus(selectedEvent);
                           return (
-                            <span className={cn(
+                          <span className={cn(
                               "px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest backdrop-blur-md",
                               st === 'future' && "bg-indigo-500/80 text-white",
                               st === 'ongoing' && "bg-emerald-500/80 text-white",
                               st === 'ended' && "bg-black/30 text-white/70"
                             )}>
                               {st === 'future' ? getEventCountdown(selectedEvent) : st === 'ongoing' ? getEventCountdown(selectedEvent) : '已结束'}
-                            </span>
+                          </span>
                           );
                         })()}
+                        </div>
                       </div>
-                    </div>
 
                     {/* Content */}
                     <div className="flex-1 -mt-8 relative bg-white rounded-t-[2.5rem] overflow-y-auto">
@@ -1437,7 +2125,7 @@ export default function App() {
                           <div className="flex items-center gap-3">
                             <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-500 shrink-0">
                               <Clock size={16} />
-                            </div>
+                          </div>
                             <p className="text-sm font-semibold text-[#1A1A1A]/70">{selectedEvent.time}</p>
                           </div>
                           <div className="flex items-center gap-3">
@@ -1445,8 +2133,8 @@ export default function App() {
                               <MapPin size={16} />
                             </div>
                             <p className="text-sm font-semibold text-[#1A1A1A]/70">{selectedEvent.location}</p>
-                          </div>
                         </div>
+                      </div>
 
                         {/* AI Insight */}
                         <div className={cn(
@@ -1466,33 +2154,33 @@ export default function App() {
                         <div className="space-y-3">
                           <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/25">活动流程</h4>
                           <div className="space-y-2.5">
-                            {selectedEvent.details.map((detail, i) => (
+                          {selectedEvent.details.map((detail, i) => (
                               <div key={i} className="flex items-start gap-3 text-sm text-black/60">
                                 <div className="w-5 h-5 rounded-full bg-black/5 flex items-center justify-center flex-shrink-0 mt-0.5">
                                   <span className="text-[10px] font-bold text-black/30">{i + 1}</span>
                                 </div>
                                 <span className="font-medium leading-snug">{detail}</span>
-                              </div>
-                            ))}
-                          </div>
+                            </div>
+                          ))}
                         </div>
+                      </div>
 
-                        {selectedEvent.gift && (
+                      {selectedEvent.gift && (
                           <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100 space-y-1.5">
                             <div className="flex items-center gap-2 text-amber-600">
                               <Gift size={14} />
                               <span className="text-[10px] font-bold uppercase tracking-widest">伴手礼</span>
-                            </div>
-                            <p className="text-sm text-amber-900/70 font-medium leading-relaxed">{selectedEvent.gift}</p>
                           </div>
-                        )}
+                            <p className="text-sm text-amber-900/70 font-medium leading-relaxed">{selectedEvent.gift}</p>
+                        </div>
+                      )}
 
-                        {selectedEvent.notes && (
+                      {selectedEvent.notes && (
                           <div className="flex gap-3 p-3.5 bg-orange-50/50 rounded-xl border border-orange-100/50">
                             <Info size={14} className="text-orange-400 shrink-0 mt-0.5" />
                             <p className="text-[11px] text-orange-900/60 leading-relaxed">{selectedEvent.notes}</p>
-                          </div>
-                        )}
+                        </div>
+                      )}
 
                         {/* ──── AI 行程规划 ──── */}
                         {getEventStatus(selectedEvent) !== 'ended' && (
@@ -1509,10 +2197,10 @@ export default function App() {
                               <p className="text-[11px] text-black/40 font-medium">今天是什么场景？</p>
                               <div className="flex flex-wrap gap-2">
                                 {selectedEvent.scenes.map(scene => (
-                                  <button
+                        <button 
                                     key={scene}
                                     onClick={() => { setEventScene(scene); setEventItinerary(null); }}
-                                    className={cn(
+                          className={cn(
                                       "text-[12px] font-semibold px-3.5 py-1.5 rounded-full transition-all active:scale-95",
                                       eventScene === scene
                                         ? "bg-[#1A1A1A] text-white"
@@ -1520,9 +2208,9 @@ export default function App() {
                                     )}
                                   >
                                     {scene}
-                                  </button>
+                        </button>
                                 ))}
-                              </div>
+                      </div>
                             </div>
 
                             {/* Arrive time */}
@@ -1548,7 +2236,7 @@ export default function App() {
                                       {t}
                                     </button>
                                   ))}
-                                </div>
+                    </div>
                               </motion.div>
                             )}
 
@@ -1616,7 +2304,7 @@ export default function App() {
                               {selectedEvent.aiQuestions.map(q => (
                                 <button
                                   key={q}
-                                  onClick={() => { setSelectedEvent(null); setMode('chat'); sendChatMessage(q); }}
+                                  onClick={() => { setSelectedEvent(null); void openFreshChat(q); }}
                                   className="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-black/5 text-[#1A1A1A]/60 hover:bg-black/10 transition-all active:scale-95"
                                 >
                                   {q}
@@ -1662,7 +2350,7 @@ export default function App() {
                         <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-2xl">
                           {memberProfile.avatarEmoji}
                         </div>
-                        <div>
+                  <div>
                           <p className="text-white font-bold text-base leading-tight">{memberProfile.name}</p>
                           <p className="text-white/50 text-[11px] mt-0.5">ID {memberProfile.id}</p>
                         </div>
@@ -1707,8 +2395,8 @@ export default function App() {
                       <div className="flex items-center gap-1.5 text-white/60 text-[11px] font-medium">
                         <CalendarCheck size={13} className="text-white/50" />
                         已连续签到 <span className="text-white font-bold">{memberProfile.checkinStreak}</span> 天
-                      </div>
-                      <button
+                  </div>
+                  <button
                         onClick={handleCheckin}
                         disabled={memberProfile.checkedInToday || checkinAnimating}
                         className={cn(
@@ -1720,8 +2408,8 @@ export default function App() {
                       >
                         {checkinAnimating ? <Loader2 size={13} className="animate-spin" /> : <CalendarCheck size={13} />}
                         {memberProfile.checkedInToday ? '已签到' : '立即签到'}
-                      </button>
-                    </div>
+                  </button>
+                </div>
 
                     {/* Checkin toast */}
                     <AnimatePresence>
@@ -1761,14 +2449,14 @@ export default function App() {
                         {icon}{label}
                       </button>
                     ))}
-                  </div>
+                </div>
 
                   {/* ── Overview ── */}
                   {memberSubPage === 'overview' && (
-                    <motion.div
+                  <motion.div
                       key="overview"
                       initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
+                    animate={{ opacity: 1, y: 0 }}
                       className="px-4 mt-4 space-y-3"
                     >
                       {/* Stats row */}
@@ -1829,12 +2517,12 @@ export default function App() {
                               {memberProfile.level === l.key && (
                                 <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">当前</span>
                               )}
-                            </div>
-                          ))}
-                        </div>
                       </div>
-                    </motion.div>
-                  )}
+                          ))}
+                    </div>
+                      </div>
+                  </motion.div>
+                )}
 
                   {/* ── Coupons ── */}
                   {memberSubPage === 'coupons' && (
@@ -1853,7 +2541,7 @@ export default function App() {
                         >
                           <div className="flex">
                             {/* Discount badge */}
-                            <div className={cn(
+                    <div className={cn(
                               "w-20 flex-shrink-0 flex flex-col items-center justify-center py-4 border-r border-dashed",
                               c.used || c.expired ? "border-black/10 bg-[#FAF9F6]" : "border-indigo-100 bg-indigo-50"
                             )}>
@@ -1863,22 +2551,22 @@ export default function App() {
                               <p className={cn("text-[9px] font-medium mt-1", c.used || c.expired ? "text-[#1A1A1A]/25" : "text-indigo-400")}>
                                 {c.tag}
                               </p>
-                            </div>
+                    </div>
                             {/* Info */}
                             <div className="flex-1 px-4 py-3 min-w-0">
                               <div className="flex items-start justify-between gap-2">
                                 <p className="text-sm font-bold text-[#1A1A1A] leading-tight">{c.title}</p>
                                 {c.used && <span className="text-[9px] font-bold text-[#1A1A1A]/30 bg-black/5 px-2 py-0.5 rounded-full flex-shrink-0">已使用</span>}
                                 {c.expired && !c.used && <span className="text-[9px] font-bold text-red-400 bg-red-50 px-2 py-0.5 rounded-full flex-shrink-0">已过期</span>}
-                              </div>
+                  </div>
                               <p className="text-[11px] text-[#1A1A1A]/40 mt-1 leading-snug">{c.desc}</p>
                               <div className="flex items-center justify-between mt-2">
                                 {c.minSpend > 0 && (
                                   <p className="text-[10px] text-[#1A1A1A]/30 font-medium">满 ¥{c.minSpend} 可用</p>
                                 )}
                                 <p className="text-[10px] text-[#1A1A1A]/30 ml-auto">{c.expiry} 到期</p>
-                              </div>
-                            </div>
+                    </div>
+                  </div>
                           </div>
                         </div>
                       ))}
@@ -1891,7 +2579,7 @@ export default function App() {
                       {memberTransactions.length === 0 ? (
                         <div className="flex items-center justify-center py-16 text-[#1A1A1A]/25">
                           <Loader2 size={22} className="animate-spin" />
-                        </div>
+              </div>
                       ) : (
                         <div className="bg-white rounded-2xl border border-black/8 overflow-hidden shadow-sm divide-y divide-black/5">
                           {memberTransactions.map(t => (
@@ -1944,12 +2632,12 @@ export default function App() {
                                 {h.type === 'earn' ? '+' : ''}{h.delta}
                               </p>
                             </div>
-                          ))}
-                        </div>
-                      )}
+                    ))}
+                  </div>
+                )}
                     </motion.div>
                   )}
-                </div>
+              </div>
               )}
             </motion.div>
           )}
