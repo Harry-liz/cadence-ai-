@@ -1,6 +1,6 @@
 from typing import Any
 import httpx
-from config import OPENROUTER_API_KEY, MODEL
+from config import MODEL, require_openrouter_api_key
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -20,7 +20,7 @@ async def call_openrouter(
         payload["response_format"] = {"type": "json_object"}
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {require_openrouter_api_key()}",
         "Content-Type": "application/json",
     }
 

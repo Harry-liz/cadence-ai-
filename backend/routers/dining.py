@@ -1,8 +1,18 @@
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from config import MODEL
+from db.session import get_db
+from services.dining_context import build_dining_context
 from services.openrouter import call_openrouter
-from data.mall import MALL_CONTEXT, RESTAURANTS
+from services.tracking import (
+    ensure_tracking_context,
+    safe_commit,
+    save_message,
+    save_recommendation_result,
+)
 
 router = APIRouter(prefix="/api/dining", tags=["dining"])
 
@@ -11,6 +21,8 @@ class DiningRequest(BaseModel):
     budget: str
     people: int
     taste: str = ""
+    user_id: str | None = None
+    session_id: str | None = None
 
 
 class Deal(BaseModel):
@@ -31,11 +43,28 @@ class RestaurantResult(BaseModel):
 
 class DiningResponse(BaseModel):
     results: list[RestaurantResult]
+    user_id: str | None = None
+    session_id: str | None = None
 
 
 @router.post("/recommend", response_model=DiningResponse)
-async def recommend(req: DiningRequest):
-    prompt = f"""基于以下商场背景：{MALL_CONTEXT}
+async def recommend(req: DiningRequest, db: Session = Depends(get_db)):
+    tracking = ensure_tracking_context(
+        db,
+        user_id=req.user_id,
+        session_id=req.session_id,
+    )
+    save_message(
+        db,
+        session_id=tracking.session_id,
+        role="user",
+        content=f"推荐餐厅：预算 {req.budget}，人数 {req.people}，偏好 {req.taste or '无特殊要求'}",
+        intent="dining_recommendation",
+        metadata={"budget": req.budget, "people": req.people, "taste": req.taste},
+    )
+    dining_context = build_dining_context(db)
+
+    prompt = f"""基于以下商场背景：{dining_context}
 
 用户正在寻找用餐地点：
 - 人均预算：{req.budget} 元
@@ -61,6 +90,33 @@ async def recommend(req: DiningRequest):
             {**r, "rating": str(r.get("rating", "")), "budget": str(r.get("budget", ""))}
             for r in results
         ]
-        return DiningResponse(results=[RestaurantResult(**r) for r in normalized])
+        response = DiningResponse(
+            results=[RestaurantResult(**r) for r in normalized],
+            user_id=tracking.user_id,
+            session_id=tracking.session_id,
+        )
+        save_message(
+            db,
+            session_id=tracking.session_id,
+            role="assistant",
+            content=json.dumps(response.model_dump(mode="json"), ensure_ascii=False),
+            intent="dining_recommendation",
+            metadata={"source": "openrouter"},
+        )
+        save_recommendation_result(
+            db,
+            session_id=tracking.session_id,
+            user_id=tracking.user_id,
+            recommendation_type="dining",
+            request_payload={
+                "budget": req.budget,
+                "people": req.people,
+                "taste": req.taste,
+            },
+            result_payload=response.model_dump(mode="json"),
+            model_name=MODEL,
+        )
+        safe_commit(db)
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -151,6 +151,11 @@ export interface DayPlan {
   actionLabel?: string;
 }
 
+export interface PlanStepEditResult extends DayPlan {
+  assistantNote: string;
+  editedStepIndex: number;
+}
+
 export async function getEventItinerary(params: {
   eventId: string;
   eventTitle: string;
@@ -209,9 +214,11 @@ export async function getTodaySummary(): Promise<TodaySummary> {
 
 export async function generateDayPlan(params: {
   scene: string;
+  people?: number;
   durationHours: number;
   budget?: number;
   arrivalTime?: string;
+  contentPreferences?: string[];
 }): Promise<DayPlan> {
   const data = await apiFetch<{
     summary: string;
@@ -222,12 +229,65 @@ export async function generateDayPlan(params: {
     action_label?: string;
   }>('/api/plan/day', {
     scene: params.scene,
+    people: params.people,
     duration_hours: params.durationHours,
     budget: params.budget,
     arrival_time: params.arrivalTime,
+    content_preferences: params.contentPreferences ?? [],
   });
 
   return {
+    summary: data.summary,
+    steps: data.steps ?? [],
+    tip: data.tip ?? '',
+    suggestions: data.suggestions ?? [],
+    action: data.action as DayPlan['action'],
+    actionLabel: data.action_label,
+  };
+}
+
+export async function editDayPlanStep(params: {
+  scene: string;
+  people?: number;
+  durationHours: number;
+  budget?: number;
+  arrivalTime?: string;
+  currentPlan: DayPlan;
+  selectedStepIndex: number;
+  instruction: string;
+  updateScope?: 'single' | 'cascade';
+}): Promise<PlanStepEditResult> {
+  const data = await apiFetch<{
+    assistant_note: string;
+    edited_step_index: number;
+    summary: string;
+    steps: string[];
+    tip: string;
+    suggestions: string[];
+    action?: string;
+    action_label?: string;
+  }>('/api/plan/edit-step', {
+    scene: params.scene,
+    people: params.people,
+    duration_hours: params.durationHours,
+    budget: params.budget,
+    arrival_time: params.arrivalTime,
+    selected_step_index: params.selectedStepIndex,
+    instruction: params.instruction,
+    update_scope: params.updateScope ?? 'single',
+    current_plan: {
+      summary: params.currentPlan.summary,
+      steps: params.currentPlan.steps,
+      tip: params.currentPlan.tip,
+      suggestions: params.currentPlan.suggestions,
+      action: params.currentPlan.action,
+      action_label: params.currentPlan.actionLabel,
+    },
+  });
+
+  return {
+    assistantNote: data.assistant_note,
+    editedStepIndex: data.edited_step_index,
     summary: data.summary,
     steps: data.steps ?? [],
     tip: data.tip ?? '',

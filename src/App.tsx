@@ -29,7 +29,6 @@ import {
   Crown,
   TrendingUp,
   Timer,
-  Navigation,
   Zap,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -38,12 +37,12 @@ import {
   getDiningRecommendation, getStyleAdvice, getChatResponse,
   getChatResponseStructured,
   getMemberProfile, postCheckin, getMemberCoupons,
-  getMemberTransactions, getMemberPointsHistory,
-  getEventItinerary, getTodaySummary, generateDayPlan,
+  getMemberTransactions, getMemberPointsHistory, editDayPlanStep,
+  getTodaySummary, generateDayPlan,
   type Restaurant, type Deal,
   type StructuredChatResponse,
   type MemberProfile, type Coupon, type Transaction, type PointsRecord, type CheckinResult,
-  type EventItinerary, type TodaySummary, type DayPlan,
+  type TodaySummary, type DayPlan,
 } from './services/geminiService';
 // 停车助手功能已停用：getParkingResponse, getParkingStatus, makeReservation
 // type ParkingLevel, type ParkingReservation
@@ -77,12 +76,43 @@ interface ChatMsg {
   action?: StructuredChatResponse['action'];
   actionLabel?: string;
   route?: string[];
+  hidden?: boolean;
 }
 
 interface ActivePlan {
   title: string;
   subtitle: string;
+  scene: string;
+  people: number;
+  durationHours: number;
+  budget?: number;
+  arrivalTime?: string;
+  contentPreferences: PlanContentPreference[];
   plan: DayPlan;
+}
+
+type PlanContentPreference = '活动' | '购物' | '美食';
+
+interface PlanPreferences {
+  sceneId: string;
+  people: number;
+  durationHours: number;
+  contentPreferences: PlanContentPreference[];
+}
+
+type StyleSeason = '春夏' | '秋冬';
+type StyleOccasion = '通勤' | '约会' | '休闲' | '运动';
+type StyleCategory = '上衣' | '外套' | '裙装' | '裤装' | '鞋包配饰';
+
+interface StyleSpot {
+  id: string;
+  title: string;
+  floor: string;
+  subtitle: string;
+  tags: string[];
+  seasons: StyleSeason[];
+  occasions: StyleOccasion[];
+  categories: StyleCategory[];
 }
 
 interface MallEvent {
@@ -131,10 +161,10 @@ const MALL_EVENTS: MallEvent[] = [
   {
     id: '4',
     title: '超级巨星·惊喜降临 — 亚洲顶流女星官方快闪',
-    time: '2026年3月2日 - 2026年3月8日',
+    time: '2026年3月2日 - 2026年3月20日',
     location: '中洲湾 C Future City L1层中庭',
     startDate: new Date('2026-03-02T00:00:00'),
-    endDate: new Date('2026-03-08T23:59:59'),
+    endDate: new Date('2026-03-20T23:59:59'),
     image: '/亚洲女星活动.png',
     details: [
       '亚洲顶流女星官方快闪「大陆首场」登陆中洲湾',
@@ -146,8 +176,8 @@ const MALL_EVENTS: MallEvent[] = [
     scenes: ['两个人约会', '朋友聚会', '自己逛逛'],
     ticketInfo: '免费入场',
     hotTag: '限量周边告急',
-    aiInsight: '今天还在！工作日下午人少，限量周边现在还有货，去的话今天是最好的时机。',
-    aiTips: ['限量周边通常活动中期就会售罄，越早去越好', '活动在 L1 中庭，从主入口进来直走即可看到', '活动只到 3 月 8 日，别拖到最后一天人挤人'],
+    aiInsight: '现在正在进行中，工作日下午人少，限量周边还有机会买到，最近去最合适。',
+    aiTips: ['限量周边通常活动中后期就会逐渐售罄，想买的话建议这几天就去', '活动在 L1 中庭，从主入口进来直走即可看到', '活动持续到 3 月 20 日，周末会明显更挤，工作日体验更好'],
     aiQuestions: ['ta 是哪位明星？', '周边怎么购买？', '顺道推荐什么餐厅？'],
     sceneInsights: {
       '两个人约会': '一起来打卡快闪，逛完正好去 B1 探鱼或绿茶，时间刚好控制在 2 小时内。',
@@ -230,7 +260,53 @@ const MALL_EVENTS: MallEvent[] = [
   },
 ];
 
+const STYLE_SPOTS: StyleSpot[] = [
+  {
+    id: 'l1-flagship',
+    title: 'L1 国际品牌旗舰店区',
+    floor: 'L1',
+    subtitle: '适合先看主打单品和完整成套搭配，逛起来更高效。',
+    tags: ['质感单品', '成套搭配', '经典不过时'],
+    seasons: ['春夏', '秋冬'],
+    occasions: ['通勤', '约会'],
+    categories: ['上衣', '外套', '裙装', '裤装', '鞋包配饰'],
+  },
+  {
+    id: 'l2-designer',
+    title: 'L2 设计师品牌区',
+    floor: 'L2',
+    subtitle: '更适合找有风格感的穿搭，出片和辨识度会更高。',
+    tags: ['设计感', '剪裁好', '更有记忆点'],
+    seasons: ['春夏', '秋冬'],
+    occasions: ['约会', '休闲', '通勤'],
+    categories: ['上衣', '外套', '裙装', '裤装'],
+  },
+  {
+    id: 'l2-lifestyle',
+    title: 'L2 生活方式精品店',
+    floor: 'L2',
+    subtitle: '适合补鞋包、配饰和日常感单品，搭配完成度更高。',
+    tags: ['配饰友好', '鞋包优先', '轻松好搭'],
+    seasons: ['春夏', '秋冬'],
+    occasions: ['通勤', '休闲', '约会'],
+    categories: ['鞋包配饰', '上衣'],
+  },
+  {
+    id: 'b1-trend',
+    title: 'B1 潮流零售区',
+    floor: 'B1',
+    subtitle: '更偏轻松和街头一点，适合先找基础款和休闲单品。',
+    tags: ['休闲感', '轻运动', '年轻一点'],
+    seasons: ['春夏', '秋冬'],
+    occasions: ['休闲', '运动'],
+    categories: ['上衣', '裤装', '鞋包配饰', '外套'],
+  },
+];
+
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
+  const [splashPointer, setSplashPointer] = useState({ x: 0, y: 0 });
+  const [homeActionsOpen, setHomeActionsOpen] = useState(false);
   const [mode, setMode] = useState<Mode>('home');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string | Restaurant[] | null>(null);
@@ -253,6 +329,13 @@ export default function App() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [styleSeason, setStyleSeason] = useState<StyleSeason>('春夏');
+  const [styleOccasion, setStyleOccasion] = useState<StyleOccasion>('通勤');
+  const [styleCategory, setStyleCategory] = useState<StyleCategory>('上衣');
+  const [styleCameraOpen, setStyleCameraOpen] = useState(false);
+  const [styleAnalysisResult, setStyleAnalysisResult] = useState<string | null>(null);
+  const [styleSpotResults, setStyleSpotResults] = useState<StyleSpot[]>([]);
+  const [styleRecommendationApplied, setStyleRecommendationApplied] = useState(false);
 
   // Chat State
   const [chatInput, setChatInput] = useState('');
@@ -264,14 +347,23 @@ export default function App() {
   const [todayLoading, setTodayLoading] = useState(true);
   const [quickPlanLoadingId, setQuickPlanLoadingId] = useState<string | null>(null);
   const [activePlan, setActivePlan] = useState<ActivePlan | null>(null);
-  const [homeSceneIndex, setHomeSceneIndex] = useState(0);
+  const [planEditOpen, setPlanEditOpen] = useState(false);
+  const [selectedPlanStepIndex, setSelectedPlanStepIndex] = useState<number | null>(null);
+  const [planEditInput, setPlanEditInput] = useState('');
+  const [planEditLoading, setPlanEditLoading] = useState(false);
+  const [planEditNote, setPlanEditNote] = useState<string | null>(null);
+  const [planEditScope, setPlanEditScope] = useState<'single' | 'cascade'>('single');
+  const [recentlyEditedPlanStepIndex, setRecentlyEditedPlanStepIndex] = useState<number | null>(null);
+  const [planPreferences, setPlanPreferences] = useState<PlanPreferences>({
+    sceneId: 'solo',
+    people: 1,
+    durationHours: 2,
+    contentPreferences: ['活动', '购物', '美食'],
+  });
+  const [planGenerating, setPlanGenerating] = useState(false);
 
   // Events State
   const [selectedEvent, setSelectedEvent] = useState<MallEvent | null>(null);
-  const [eventScene, setEventScene] = useState('');
-  const [eventArriveTime, setEventArriveTime] = useState('');
-  const [eventItinerary, setEventItinerary] = useState<EventItinerary | null>(null);
-  const [itineraryLoading, setItineraryLoading] = useState(false);
   const [eventSceneFilter, setEventSceneFilter] = useState(''); // 场景筛选 chip
 
   // Member State
@@ -297,27 +389,34 @@ export default function App() {
   const eventsScrollRef = useRef<HTMLDivElement>(null);
   const restaurantsScrollRef = useRef<HTMLDivElement>(null);
 
+  const getCarouselEvents = () => [
+    ...MALL_EVENTS.filter((event) => getEventStatus(event) === 'ongoing'),
+    ...MALL_EVENTS.filter((event) => getEventStatus(event) === 'future'),
+    ...MALL_EVENTS.filter((event) => getEventStatus(event) === 'ended'),
+  ];
+
+  const scrollToEventIndex = (index: number) => {
+    const el = eventsScrollRef.current;
+    if (el) {
+      const cardSlotWidth = el.offsetWidth * 0.78 + 16;
+      el.scrollTo({ left: index * cardSlotWidth, behavior: 'smooth' });
+    }
+  };
+
   const handleEventScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const cardSlotWidth = el.offsetWidth * 0.78 + 16;
     const idx = Math.round(el.scrollLeft / cardSlotWidth);
-    const activeLen = MALL_EVENTS.filter(ev => getEventStatus(ev) !== 'ended').length;
-    setCenterEventIndex(Math.max(0, Math.min(idx, activeLen - 1)));
+    const totalLen = getCarouselEvents().length;
+    setCenterEventIndex(Math.max(0, Math.min(idx, totalLen - 1)));
   };
 
   const handleCarouselCardClick = (index: number) => {
     if (index === centerEventIndex) {
-      const activeEvents = MALL_EVENTS.filter(ev => getEventStatus(ev) !== 'ended');
-      const ev = activeEvents[index];
+      const ev = getCarouselEvents()[index];
       setSelectedEvent(ev);
-      setEventScene('');
-      setEventItinerary(null);
     } else {
-      const el = eventsScrollRef.current;
-      if (el) {
-        const cardSlotWidth = el.offsetWidth * 0.78 + 16;
-        el.scrollTo({ left: index * cardSlotWidth, behavior: 'smooth' });
-      }
+      scrollToEventIndex(index);
     }
   };
 
@@ -330,21 +429,19 @@ export default function App() {
     const next = eventSceneFilter === scene ? '' : scene;
     setEventSceneFilter(next);
     if (!next) return;
-    const activeEvents = MALL_EVENTS.filter(e => getEventStatus(e) !== 'ended');
+    const carouselEvents = getCarouselEvents();
     const bestIdx = (() => {
-      let i = activeEvents.findIndex(e => e.scenes.includes(next) && getEventStatus(e) === 'ongoing');
+      let i = carouselEvents.findIndex(e => e.scenes.includes(next) && getEventStatus(e) === 'ongoing');
       if (i >= 0) return i;
-      i = activeEvents.findIndex(e => e.scenes.includes(next) && getEventStatus(e) === 'future');
+      i = carouselEvents.findIndex(e => e.scenes.includes(next) && getEventStatus(e) === 'future');
       if (i >= 0) return i;
-      return activeEvents.findIndex(e => e.scenes.includes(next));
+      i = carouselEvents.findIndex(e => e.scenes.includes(next) && getEventStatus(e) === 'ended');
+      if (i >= 0) return i;
+      return carouselEvents.findIndex(e => e.scenes.includes(next));
     })();
     if (bestIdx >= 0) {
       setCenterEventIndex(bestIdx);
-      const el = eventsScrollRef.current;
-      if (el) {
-        const cardSlotWidth = el.offsetWidth * 0.78 + 16;
-        el.scrollTo({ left: bestIdx * cardSlotWidth, behavior: 'smooth' });
-      }
+      scrollToEventIndex(bestIdx);
     }
   };
 
@@ -374,10 +471,10 @@ export default function App() {
 
   const quickPlanPresets = [
     {
-      id: 'quick-2h',
+      id: 'planner',
       emoji: '⚡',
-      label: '2小时精华',
-      desc: '适合下班后或顺路来一趟',
+      label: '一键成行',
+      desc: '先选人数、时长和状态，再生成路线',
       scene: '自己逛逛',
       durationHours: 2,
       budget: 200,
@@ -411,15 +508,30 @@ export default function App() {
     },
   ] as const;
 
-  useEffect(() => {
-    if (mode !== 'home') return;
+  const planSceneOptions = [
+    { id: 'solo', emoji: '🧍', title: '自己来', subtitle: '轻松逛', scene: '自己逛逛', defaultPeople: 1 },
+    { id: 'date', emoji: '💞', title: '和对象', subtitle: '有氛围', scene: '两个人约会', defaultPeople: 2 },
+    { id: 'friends', emoji: '🎉', title: '和朋友', subtitle: '热闹点', scene: '朋友聚会', defaultPeople: 3 },
+    { id: 'kids', emoji: '🧒', title: '带孩子', subtitle: '别太累', scene: '带小孩来玩', defaultPeople: 3 },
+    { id: 'family', emoji: '🏡', title: '和家人', subtitle: '舒服逛', scene: '和家人', defaultPeople: 3 },
+  ] as const;
 
-    const timer = window.setInterval(() => {
-      setHomeSceneIndex((prev) => (prev + 1) % Math.max(quickPlanPresets.length - 1, 1));
-    }, 3200);
+  const planPeopleOptions = [1, 2, 3, 4, 5] as const;
+  const planDurationOptions = [2, 3, 4] as const;
+  const planContentOptions: PlanContentPreference[] = ['活动', '购物', '美食'];
 
-    return () => window.clearInterval(timer);
-  }, [mode, quickPlanPresets.length]);
+  const togglePlanContentPreference = (item: PlanContentPreference) => {
+    setPlanPreferences((prev) => {
+      const exists = prev.contentPreferences.includes(item);
+      if (exists && prev.contentPreferences.length === 1) return prev;
+      return {
+        ...prev,
+        contentPreferences: exists
+          ? prev.contentPreferences.filter((value) => value !== item)
+          : [...prev.contentPreferences, item],
+      };
+    });
+  };
 
   const getTodayToneClasses = (tone: TodaySummary['statuses'][number]['tone']) => {
     if (tone === 'green') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
@@ -506,6 +618,32 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!showSplash) return;
+
+    const handleMove = (event: MouseEvent) => {
+      const centerX = window.innerWidth / 2;
+      const centerY = window.innerHeight / 2;
+      const x = (event.clientX - centerX) / centerX;
+      const y = (event.clientY - centerY) / centerY;
+
+      setSplashPointer({
+        x: Math.max(-1, Math.min(1, x)),
+        y: Math.max(-1, Math.min(1, y)),
+      });
+    };
+
+    const resetPointer = () => setSplashPointer({ x: 0, y: 0 });
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseleave', resetPointer);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseleave', resetPointer);
+    };
+  }, [showSplash]);
+
   const stopCamera = () => {
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
@@ -529,14 +667,55 @@ export default function App() {
     setLoading(true);
     try {
       const advice = await getStyleAdvice(imageData);
-      setResult(advice || "Sorry, I couldn't analyze the image.");
+      setStyleAnalysisResult(advice || "Sorry, I couldn't analyze the image.");
+      setStyleCameraOpen(false);
     } catch (err) {
       console.error(err);
-      setResult("Error analyzing style. Please try again.");
+      setStyleAnalysisResult("Error analyzing style. Please try again.");
+      setStyleCameraOpen(false);
     } finally {
       setLoading(false);
     }
   };
+
+  const handleStyleRecommend = () => {
+    const ranked = STYLE_SPOTS
+      .map((spot) => {
+        let score = 0;
+        if (spot.seasons.includes(styleSeason)) score += 2;
+        if (spot.occasions.includes(styleOccasion)) score += 2;
+        if (spot.categories.includes(styleCategory)) score += 2;
+        return { spot, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    setStyleSpotResults(ranked.slice(0, 3).map((item) => item.spot));
+    setStyleRecommendationApplied(true);
+    setStyleAnalysisResult(null);
+    setStyleCameraOpen(false);
+    stopCamera();
+  };
+
+  const handleOpenStyleCamera = async () => {
+    setStyleAnalysisResult(null);
+    setStyleCameraOpen(true);
+    await startCamera();
+  };
+
+  const handleCloseStyleCamera = () => {
+    stopCamera();
+    setStyleCameraOpen(false);
+  };
+
+  useEffect(() => {
+    setStyleRecommendationApplied(false);
+  }, [styleSeason, styleOccasion, styleCategory]);
+
+  useEffect(() => {
+    if (recentlyEditedPlanStepIndex === null) return;
+    const timer = window.setTimeout(() => setRecentlyEditedPlanStepIndex(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [recentlyEditedPlanStepIndex]);
 
   const handleDiningSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -639,38 +818,88 @@ export default function App() {
     title: string;
     subtitle: string;
     scene: string;
+    people: number;
     durationHours: number;
     budget?: number;
+    contentPreferences: PlanContentPreference[];
   }) => {
     const plan = await generateDayPlan({
       scene: params.scene,
+      people: params.people,
       durationHours: params.durationHours,
       budget: params.budget,
+      contentPreferences: params.contentPreferences,
     });
 
+    setPlanEditOpen(false);
+    setSelectedPlanStepIndex(null);
+    setPlanEditInput('');
+    setPlanEditLoading(false);
+    setPlanEditNote(null);
+    setPlanEditScope('single');
+    setRecentlyEditedPlanStepIndex(null);
     setActivePlan({
       title: params.title,
       subtitle: params.subtitle,
+      scene: params.scene,
+      people: params.people,
+      durationHours: params.durationHours,
+      budget: params.budget,
+      contentPreferences: params.contentPreferences,
       plan,
     });
     setMode('plan');
   };
 
+  const openPlanBuilder = (overrides?: Partial<PlanPreferences>) => {
+    setPlanEditOpen(false);
+    setSelectedPlanStepIndex(null);
+    setPlanEditInput('');
+    setPlanEditLoading(false);
+    setPlanEditNote(null);
+    setPlanEditScope('single');
+    setRecentlyEditedPlanStepIndex(null);
+    setActivePlan(null);
+    if (overrides) {
+      setPlanPreferences((prev) => ({ ...prev, ...overrides }));
+    }
+    setMode('plan');
+  };
+
   const handleQuickPlan = async (preset: typeof quickPlanPresets[number]) => {
+    if (preset.id === 'planner') {
+      openPlanBuilder();
+      return;
+    }
+
     setQuickPlanLoadingId(preset.id);
     try {
       await openPlanResult({
         title: preset.label,
         subtitle: preset.desc,
         scene: preset.scene,
+        people: planPreferences.people,
         durationHours: preset.durationHours,
         budget: preset.budget,
+        contentPreferences: planPreferences.contentPreferences,
       });
     } catch (err) {
       console.error(err);
+      setPlanEditOpen(false);
+      setSelectedPlanStepIndex(null);
+      setPlanEditInput('');
+      setPlanEditLoading(false);
+      setPlanEditNote(null);
+      setPlanEditScope('single');
+      setRecentlyEditedPlanStepIndex(null);
       setActivePlan({
         title: preset.label,
         subtitle: preset.desc,
+        scene: preset.scene,
+        people: planPreferences.people,
+        durationHours: preset.durationHours,
+        budget: preset.budget,
+        contentPreferences: planPreferences.contentPreferences,
         plan: {
           summary: '我先给你一个轻量建议：先去 L1 看重点活动，再顺路去 B1 或 L3 吃饭，这样今天最不容易踩坑。',
           steps: ['先去 L1 中庭看重点活动', '再去 B1 或 L3 安排用餐', '最后留一点时间轻松逛逛'],
@@ -688,18 +917,7 @@ export default function App() {
 
   const handleTodayHighlight = async (highlight: TodaySummary['highlights'][number]) => {
     if (highlight.action === 'chat') {
-      setQuickPlanLoadingId('today-highlight');
-      try {
-        await openPlanResult({
-          title: 'Today 路线建议',
-          subtitle: '基于今天的节奏，直接给你一条更值的路线',
-          scene: '自己逛逛',
-          durationHours: 2,
-          budget: 250,
-        });
-      } finally {
-        setQuickPlanLoadingId(null);
-      }
+      openPlanBuilder({ sceneId: 'solo', people: 1, durationHours: 2 });
       return;
     }
 
@@ -713,6 +931,209 @@ export default function App() {
     await sendChatMessage(msg, { resetHistory: true });
   };
 
+  const handlePlanStepEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activePlan || selectedPlanStepIndex === null || !planEditInput.trim()) return;
+
+    setPlanEditLoading(true);
+    try {
+      const updated = await editDayPlanStep({
+        scene: activePlan.scene,
+        people: activePlan.people,
+        durationHours: activePlan.durationHours,
+        budget: activePlan.budget,
+        arrivalTime: activePlan.arrivalTime,
+        currentPlan: activePlan.plan,
+        selectedStepIndex: selectedPlanStepIndex,
+        instruction: planEditInput.trim(),
+        updateScope: planEditScope,
+      });
+
+      setActivePlan({
+        ...activePlan,
+        plan: {
+          summary: updated.summary,
+          steps: updated.steps,
+          tip: updated.tip,
+          suggestions: updated.suggestions,
+          action: updated.action,
+          actionLabel: updated.actionLabel,
+        },
+      });
+      setSelectedPlanStepIndex(updated.editedStepIndex);
+      setRecentlyEditedPlanStepIndex(updated.editedStepIndex);
+      setPlanEditNote(updated.assistantNote);
+      setPlanEditInput('');
+    } catch (err) {
+      console.error(err);
+      setPlanEditNote('这一步暂时没改成功，你可以换个说法再试一次。');
+    } finally {
+      setPlanEditLoading(false);
+    }
+  };
+
+  const openPlanChatFollowup = async () => {
+    if (!activePlan) return;
+    const routeText = activePlan.plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+    const hiddenContext: ChatMsg = {
+      role: 'user',
+      hidden: true,
+      text: [
+        `这是用户当前的一键成行路线，请你后续都基于这条路线继续对话。`,
+        `标题：${activePlan.title}`,
+        `副标题：${activePlan.subtitle}`,
+        `场景：${activePlan.scene}`,
+        `人数：${activePlan.people}`,
+        `时长：${activePlan.durationHours} 小时`,
+        `预算：${activePlan.budget ?? '未指定'}`,
+        `路线偏好：${activePlan.contentPreferences.join('、')}`,
+        `路线摘要：${activePlan.plan.summary}`,
+        '路线节点：',
+        routeText,
+        `执行提醒：${activePlan.plan.tip}`,
+        '当用户后续提问时，默认认为他是在基于这条路线继续追问、解释或调整。',
+      ].join('\n'),
+    };
+    const introMessage: ChatMsg = {
+      role: 'ai',
+      text: `这条路线我已经收到了。你可以直接基于它问我，比如想了解更多店铺信息或者看看哪里更值得停留。`,
+      route: activePlan.plan.steps.map((step, index) => `${index + 1}. ${step}`),
+      suggestions: activePlan.plan.suggestions.length > 0
+        ? activePlan.plan.suggestions
+        : ['这条路线哪里最值得改', '第二步能换一下吗', '顺路吃什么更合适'],
+    };
+
+    setPlanEditOpen(false);
+    setSelectedPlanStepIndex(null);
+    setPlanEditInput('');
+    setPlanEditNote(null);
+    setPlanEditScope('single');
+    setChatInput('');
+    setChatStreaming('');
+    setLoading(false);
+    setFullChatHistory([hiddenContext, introMessage]);
+    setMode('chat');
+    setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+  };
+
+  const openEventChatQuestion = async (event: MallEvent, question: string) => {
+    const hiddenContext: ChatMsg = {
+      role: 'user',
+      hidden: true,
+      text: [
+        '这是用户刚刚在活动页点击进入聊天时的上下文，请你优先基于这场活动回答。',
+        `活动标题：${event.title}`,
+        `活动时间：${event.time}`,
+        `活动地点：${event.location}`,
+        `活动状态：${getEventStatus(event) === 'ongoing' ? '进行中' : getEventStatus(event) === 'future' ? '即将开始' : '已结束'}`,
+        `活动亮点：${event.tags.join('、')}`,
+        `活动简介：${event.aiInsight}`,
+        `活动详情：${event.details.join('；')}`,
+        '如果用户继续追问，默认认为他是在围绕这场活动继续问。',
+      ].join('\n'),
+    };
+    const userMsg: ChatMsg = { role: 'user', text: question };
+    const nextHistory = [hiddenContext, userMsg];
+
+    setSelectedEvent(null);
+    setMode('chat');
+    setFullChatHistory(nextHistory);
+    setChatInput('');
+    setLoading(true);
+    setChatStreaming('');
+
+    try {
+      const res = await getChatResponseStructured(
+        question,
+        nextHistory.map((m) => ({ role: m.role, text: m.text }))
+      );
+      const aiMsg: ChatMsg = { role: 'ai', ...res };
+      setFullChatHistory([...nextHistory, aiMsg]);
+      let i = 0;
+      const interval = setInterval(() => {
+        setChatStreaming(res.text.slice(0, i + 1));
+        i++;
+        if (i >= res.text.length) {
+          clearInterval(interval);
+          setChatStreaming('');
+        }
+      }, 20);
+    } catch (err) {
+      console.error(err);
+      try {
+        const fallbackText = await getChatResponse(question);
+        setFullChatHistory([
+          ...nextHistory,
+          {
+            role: 'ai',
+            text: fallbackText || '我先按这场活动来回答你，你也可以继续追问更具体一点。',
+            suggestions: event.aiQuestions.slice(0, 3),
+          },
+        ]);
+      } catch (fallbackErr) {
+        console.error(fallbackErr);
+        setFullChatHistory([
+          ...nextHistory,
+          {
+            role: 'ai',
+            text: '我先按这场活动的上下文接住你了，你可以换个更具体的问题再试试。',
+            suggestions: event.aiQuestions.slice(0, 3),
+          },
+        ]);
+      }
+    } finally {
+      setLoading(false);
+      setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  };
+
+  const handleGenerateCustomPlan = async () => {
+    const selectedScene = planSceneOptions.find((item) => item.id === planPreferences.sceneId) ?? planSceneOptions[0];
+    const budget = planPreferences.durationHours * 90 + Math.max(planPreferences.people - 1, 0) * 40;
+
+    setPlanGenerating(true);
+    try {
+      await openPlanResult({
+        title: '一键成行',
+        subtitle: `${selectedScene.title} · ${planPreferences.people >= 5 ? '5+ 人' : `${planPreferences.people} 人`} · ${planPreferences.durationHours} 小时`,
+        scene: selectedScene.scene,
+        people: planPreferences.people,
+        durationHours: planPreferences.durationHours,
+        budget,
+        contentPreferences: planPreferences.contentPreferences,
+      });
+    } catch (err) {
+      console.error(err);
+      setPlanEditOpen(false);
+      setSelectedPlanStepIndex(null);
+      setPlanEditInput('');
+      setPlanEditLoading(false);
+      setPlanEditNote(null);
+      setPlanEditScope('single');
+      setRecentlyEditedPlanStepIndex(null);
+      setActivePlan({
+        title: '一键成行',
+        subtitle: `${selectedScene.title} · ${planPreferences.people >= 5 ? '5+ 人' : `${planPreferences.people} 人`} · ${planPreferences.durationHours} 小时`,
+        scene: selectedScene.scene,
+        people: planPreferences.people,
+        durationHours: planPreferences.durationHours,
+        budget,
+        contentPreferences: planPreferences.contentPreferences,
+        plan: {
+          summary: '我先给你一条稳妥路线：先看一个重点活动，再顺路吃饭，最后留一点时间轻松逛。',
+          steps: ['先去 L1 看今天最值得去的活动', '按你的人数和节奏安排顺路用餐', '最后留一点时间逛 B1 或 B2 收尾'],
+          tip: '路线好不好，关键不在点位多，而在于节奏顺不顺。',
+          suggestions: ['我想再轻松一点', '顺路吃什么更合适', '帮我改成约会路线'],
+          action: 'dining',
+          actionLabel: '去看美食推荐',
+        },
+      });
+      setMode('plan');
+    } finally {
+      setPlanGenerating(false);
+    }
+  };
+
   const handleHomeChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -721,10 +1142,15 @@ export default function App() {
   };
 
   const handleModeChange = (newMode: Mode) => {
-    if (newMode !== 'style') stopCamera();
+    if (newMode !== 'style') {
+      stopCamera();
+      setStyleCameraOpen(false);
+    }
     setMode(newMode);
     setResult(null);
-    if (newMode === 'style') startCamera();
+    if (newMode === 'style') {
+      setStyleAnalysisResult(null);
+    }
     if (newMode === 'member' && !memberProfile) {
       setMemberLoading(true);
       getMemberProfile().then(p => setMemberProfile(p)).finally(() => setMemberLoading(false));
@@ -732,28 +1158,6 @@ export default function App() {
 
     // 停车助手功能已停用
     // if (newMode === 'parking' && parkingHistory.length === 0) { ... }
-  };
-
-  const handleGenerateItinerary = async () => {
-    if (!selectedEvent || !eventScene) return;
-    setItineraryLoading(true);
-    setEventItinerary(null);
-    try {
-      const result = await getEventItinerary({
-        eventId: selectedEvent.id,
-        eventTitle: selectedEvent.title,
-        eventLocation: selectedEvent.location,
-        eventTime: selectedEvent.time,
-        eventDetails: selectedEvent.details,
-        scene: eventScene,
-        arriveTime: eventArriveTime || '下午2点',
-      });
-      setEventItinerary(result);
-    } catch {
-      setEventItinerary({ steps: [], tip: '暂时无法生成行程，请稍后再试' });
-    } finally {
-      setItineraryLoading(false);
-    }
   };
 
   const handleCheckin = async () => {
@@ -785,13 +1189,156 @@ export default function App() {
 
   const lastUserPrompt = fullChatHistory.filter(m => m.role === 'user').slice(-1)[0]?.text ?? '';
   const homePrimaryPreset = quickPlanPresets[0];
-  const homeSpotlightPreset = quickPlanPresets[(homeSceneIndex % Math.max(quickPlanPresets.length - 1, 1)) + 1];
   const smartBanner = getSmartBanner();
   const homeStatusItems = todaySummary?.statuses.slice(0, 3) ?? [];
   const homeChatSuggestions = [
     todaySummary?.highlights[0]?.query ?? '今天有什么活动？',
     '现在适合先吃饭还是先逛？',
   ];
+  const selectedPlanScene = planSceneOptions.find((item) => item.id === planPreferences.sceneId) ?? planSceneOptions[0];
+  const eyeOffsetX = splashPointer.x * 4;
+  const eyeOffsetY = splashPointer.y * 3;
+
+  if (showSplash) {
+    return (
+      <div className="relative min-h-screen overflow-hidden bg-[#F7F5F1] text-[#1A1A1A]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(167,148,223,0.18),transparent_24%),radial-gradient(circle_at_16%_18%,rgba(220,211,245,0.34),transparent_28%),radial-gradient(circle_at_82%_72%,rgba(231,220,255,0.32),transparent_24%),radial-gradient(circle_at_76%_18%,rgba(209,231,255,0.18),transparent_18%),radial-gradient(circle_at_18%_82%,rgba(255,232,208,0.18),transparent_20%),linear-gradient(180deg,#FCFBF8_0%,#F7F4F7_48%,#F4EFF9_100%)]" />
+        <motion.div
+          aria-hidden="true"
+          className="pointer-events-none absolute left-[12%] top-[18%] h-24 w-24 rounded-full bg-[#D9CFF2]/70 blur-3xl sm:h-32 sm:w-32"
+          animate={{ y: [0, -16, 0], x: [0, 8, 0], scale: [1, 1.06, 1] }}
+          transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          aria-hidden="true"
+          className="pointer-events-none absolute right-[10%] top-[28%] h-28 w-28 rounded-full bg-[#D6CCE9]/66 blur-3xl sm:h-40 sm:w-40"
+          animate={{ y: [0, 14, 0], x: [0, -10, 0], scale: [1, 1.08, 1] }}
+          transition={{ duration: 8.5, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-[14%] right-[18%] h-20 w-20 rounded-full bg-[#F4E2E7]/70 blur-3xl sm:h-28 sm:w-28"
+          animate={{ y: [0, -12, 0], x: [0, 10, 0] }}
+          transition={{ duration: 6.5, repeat: Infinity, ease: 'easeInOut' }}
+        />
+
+        <div className="relative flex min-h-screen flex-col justify-between px-6 py-8 sm:px-10 sm:py-10">
+          <motion.div
+            initial={{ opacity: 0, y: -16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.55 }}
+            className="max-w-[18rem] self-end text-right sm:max-w-md"
+          >
+            <div className="inline-flex rounded-full border border-white/60 bg-white/45 px-3 py-1.5 backdrop-blur-md">
+              <p className="text-[10px] font-medium uppercase tracking-[0.28em] text-[#9A8EB6] sm:text-xs">
+                Cadence AI
+              </p>
+            </div>
+            <h1 className="mt-4 text-[2.25rem] font-semibold leading-[1.02] tracking-[-0.05em] text-[#534C69] sm:text-6xl sm:font-bold">
+              轻点一下
+              <br />
+              开始今天的商场旅程
+            </h1>
+            <p className="mt-4 text-[13px] leading-6 text-[#9086AA] sm:text-base">
+              点击左下角的形象，进入首页。
+            </p>
+          </motion.div>
+
+          <motion.button
+            type="button"
+            onClick={() => setShowSplash(false)}
+            initial={{ opacity: 0, x: -30, y: 24 }}
+            animate={{ opacity: 1, x: 0, y: [0, -10, 0] }}
+            transition={{
+              opacity: { duration: 0.55, delay: 0.15 },
+              x: { duration: 0.55, delay: 0.15 },
+              y: { duration: 4.8, repeat: Infinity, ease: 'easeInOut', delay: 0.35 },
+            }}
+            whileHover={{ x: 10, y: -12, scale: 1.03, rotate: -2 }}
+            whileTap={{ scale: 0.98 }}
+            className="group relative -ml-6 mt-10 flex w-fit items-end bg-transparent text-left outline-none sm:-ml-10"
+            aria-label="进入 Cadence 首页"
+          >
+            <motion.div
+              aria-hidden="true"
+              className="pointer-events-none absolute -bottom-3 left-4 h-10 w-[72%] rounded-full bg-[#8D74FF]/22 blur-2xl sm:left-8 sm:h-12"
+              animate={{ scaleX: [1, 1.08, 1], opacity: [0.22, 0.34, 0.22] }}
+              transition={{ duration: 4.8, repeat: Infinity, ease: 'easeInOut' }}
+            />
+
+            <motion.div
+              className="relative z-10 flex w-[22rem] max-w-[82vw] flex-col items-center sm:w-[28rem]"
+              animate={{ rotate: [0, -1.6, 0, 1.2, 0] }}
+              transition={{ duration: 5.4, repeat: Infinity, ease: 'easeInOut' }}
+            >
+              <motion.div
+                className="mb-4 rounded-full border border-white/70 bg-white/78 px-4 py-2 text-sm font-medium text-[#5B4FA8] shadow-[0_18px_45px_rgba(126,106,255,0.18)] backdrop-blur-md sm:text-base"
+                animate={{ y: [0, -6, 0], scale: [1, 1.03, 1] }}
+                transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+              >
+                WELCOME
+              </motion.div>
+
+              <div className="relative">
+                <motion.div
+                  className="relative h-[9.75rem] w-[18rem] overflow-hidden rounded-t-[999px] border border-white/60 border-b-0 bg-[linear-gradient(145deg,#ead6fa_0%,#d7b3f2_38%,#c393e8_68%,#b883df_100%)] shadow-[0_28px_70px_rgba(184,131,223,0.26)] sm:h-[11.25rem] sm:w-[21rem]"
+                  animate={{ y: [0, -8, 0], scale: [1, 1.01, 1] }}
+                  transition={{ duration: 4.8, repeat: Infinity, ease: 'easeInOut' }}
+                >
+                  <div className="absolute inset-x-0 top-0 h-[52%] rounded-t-[999px] bg-[linear-gradient(180deg,rgba(255,255,255,0.28),rgba(255,255,255,0))]" />
+                  <div className="absolute left-[16%] top-[14%] h-[34%] w-[26%] rotate-[-18deg] rounded-full bg-white/24 blur-md" />
+                  <div className="absolute right-[14%] top-[24%] h-[12%] w-[8%] rounded-full bg-white/32 blur-[2px]" />
+
+                  <motion.div
+                    className="absolute left-[24%] top-[43%] h-5 w-10 rounded-t-full border-[5px] border-b-0 border-[#3f245f] sm:h-6 sm:w-12 sm:border-[6px]"
+                    animate={{ x: eyeOffsetX, y: eyeOffsetY }}
+                    transition={{ type: 'spring', stiffness: 220, damping: 22, mass: 0.35 }}
+                  />
+
+                  <motion.div
+                    className="absolute right-[24%] top-[43%] h-5 w-10 rounded-t-full border-[5px] border-b-0 border-[#3f245f] sm:h-6 sm:w-12 sm:border-[6px]"
+                    animate={{ x: eyeOffsetX, y: eyeOffsetY }}
+                    transition={{ type: 'spring', stiffness: 220, damping: 22, mass: 0.35 }}
+                  />
+
+                  <div className="absolute left-[18%] top-[68%] h-5 w-8 rounded-full bg-[#e7cff8]/40 blur-[1px]" />
+                  <div className="absolute right-[18%] top-[68%] h-5 w-8 rounded-full bg-[#e7cff8]/40 blur-[1px]" />
+                  <div className="absolute left-1/2 top-[65%] h-5 w-11 -translate-x-1/2 rounded-b-[999px] bg-[#2d1f5e]" />
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 200 24"
+                    preserveAspectRatio="none"
+                    className="absolute inset-x-0 bottom-[-1px] h-5 w-full"
+                  >
+                    <path
+                      d="M0 8C14 2 28 2 42 8C56 14 70 14 84 8C98 2 112 2 126 8C140 14 154 14 168 8C180 3 190 3 200 8V24H0Z"
+                      fill="#b883df"
+                    />
+                  </svg>
+                </motion.div>
+
+                <motion.div
+                  className="absolute -right-12 -top-6 flex h-16 w-16 items-center justify-center rounded-full bg-[linear-gradient(145deg,#FAF0FF,#E6CCFA)] text-lg font-semibold text-[#734a9f] shadow-[0_18px_35px_rgba(184,131,223,0.22)] sm:-right-14 sm:-top-8 sm:h-[4.5rem] sm:w-[4.5rem] sm:text-xl"
+                  animate={{ rotate: [0, 12, 0, -8, 0], y: [0, -4, 0] }}
+                  transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
+                >
+                  Hi
+                </motion.div>
+              </div>
+            </motion.div>
+
+            <motion.div
+              className="absolute bottom-8 left-[60%] rounded-full border border-white/70 bg-white/72 px-4 py-2 text-xs font-medium text-[#5A507E] shadow-[0_18px_45px_rgba(164,138,255,0.16)] backdrop-blur-md transition-all group-hover:bg-white/88 group-hover:text-[#433B63] sm:bottom-10 sm:px-5 sm:py-2.5 sm:text-sm"
+              animate={{ y: [0, -6, 0], scale: [1, 1.03, 1] }}
+              transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+            >
+              点击进入
+            </motion.div>
+          </motion.button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#F7F5F1] text-[#1A1A1A] font-sans selection:bg-indigo-100 overflow-x-hidden">
@@ -837,239 +1384,146 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="flex-1 grid grid-rows-[auto,1fr,auto] gap-3 sm:gap-4 py-2 sm:py-4 min-h-0"
+              className="relative flex-1 flex items-center justify-center py-6 sm:py-10"
             >
-              <div className="flex items-center justify-between pt-1 sm:pt-2">
-                <div className="space-y-1">
+              <div className="w-full max-w-3xl space-y-8 sm:space-y-10 -translate-y-8 sm:-translate-y-[3.75rem]">
+                <div className="relative space-y-5 text-center -translate-y-6 sm:-translate-y-6">
                   <motion.p
                     initial={{ opacity: 0, y: -6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                    className="text-[10px] uppercase tracking-[0.28em] font-bold text-[#1A1A1A]/28"
-                >
-                    Cadence
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.02 }}
+                    className="text-[11px] sm:text-[12px] font-semibold uppercase tracking-[0.34em] text-[#6A5BB4]/55"
+                  >
+                    A Better Way to Mall
                   </motion.p>
-                <motion.h2 
+                  <div className="pointer-events-none absolute left-1/2 top-[52%] h-24 w-[14rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(132,110,229,0.24),rgba(132,110,229,0.08)_40%,rgba(255,255,255,0)_72%)] blur-2xl sm:h-32 sm:w-[22rem]" />
+                  <motion.h2
                     initial={{ opacity: 0, scale: 0.97 }}
-                  animate={{ opacity: 1, scale: 1 }}
+                    animate={{ opacity: 1, scale: 1 }}
                     transition={{ delay: 0.08 }}
-                    className="text-[2.45rem] sm:text-[3rem] font-bold tracking-[-0.065em] text-[#1A1A1A] leading-[0.92]"
-                >
-                    <span className="font-serif italic bg-gradient-to-br from-[#5649A6] via-[#5C82FF] to-[#AE8BFF] bg-clip-text text-transparent">
+                    className="relative text-[3.15rem] sm:text-[5.2rem] font-semibold tracking-[-0.02em] text-[#1A1A1A] leading-[1.02]"
+                  >
+                    <span className="inline-block px-3 sm:px-5 font-serif bg-gradient-to-r from-[#45397E] via-[#6656C9] to-[#A288E3] bg-clip-text text-transparent drop-shadow-[0_14px_34px_rgba(102,86,201,0.14)]">
                       Cadence
-                  </span>
-                </motion.h2>
+                    </span>
+                  </motion.h2>
                 </div>
-                <button
-                  onClick={() => handleModeChange('today')}
-                  className="px-3 py-1.5 sm:px-3.5 sm:py-2 rounded-full bg-white/36 backdrop-blur-xl border border-white/45 shadow-[0_16px_40px_rgba(111,123,255,0.12)] text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/65 active:scale-95 transition-all"
-                >
-                  Today
-                </button>
+
+                <div className="rounded-[2rem] sm:rounded-[2.4rem] border border-white/70 bg-white/44 backdrop-blur-[26px] shadow-[0_24px_70px_rgba(17,24,39,0.05)] px-4 py-5 sm:px-6 sm:py-7">
+                  <div className="space-y-5 sm:space-y-6">
+                    {lastUserPrompt && (
+                      <div className="flex justify-center">
+                        <button
+                          onClick={() => handleModeChange('chat')}
+                          className="inline-flex w-full max-w-md items-center justify-center gap-2.5 rounded-[1.1rem] border border-black/[0.05] bg-white/76 px-4 py-3 text-[13px] font-semibold text-[#1A1A1A]/58 shadow-[0_10px_22px_rgba(17,24,39,0.04)] transition-all active:scale-95"
+                        >
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-50 text-indigo-500 flex-shrink-0">
+                            <Sparkles size={13} />
+                          </span>
+                          <span className="truncate max-w-[15rem] sm:max-w-[22rem]">继续上次对话 · {lastUserPrompt}</span>
+                        </button>
+                      </div>
+                    )}
+
+                    <form onSubmit={handleHomeChatSubmit} className="relative group">
+                      <div className="absolute -inset-1.5 rounded-[2.15rem] bg-gradient-to-r from-violet-200/14 via-white/10 to-indigo-200/14 blur-lg opacity-60 transition duration-500 group-focus-within:opacity-100" />
+                      <div className="relative overflow-hidden rounded-[1.7rem] sm:rounded-[2rem] border border-white/95 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,255,255,0.90))] backdrop-blur-[24px] shadow-[0_18px_48px_rgba(17,24,39,0.06)]">
+                        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/90 to-transparent" />
+                        <div className="px-5 pt-4 sm:px-6 sm:pt-5">
+                          <p className="text-[11px] sm:text-[12px] font-semibold tracking-[0.16em] uppercase text-[#6D63A8]/55">
+                            Ask Cadence
+                          </p>
+                        </div>
+                        <input 
+                          type="text"
+                          placeholder="今天想怎么逛？"
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          className="w-full bg-transparent rounded-[1.7rem] sm:rounded-[2rem] pt-2 pb-4 sm:pt-2.5 sm:pb-5 pl-5 sm:pl-6 pr-16 sm:pr-20 focus:outline-none font-medium text-[#1A1A1A] text-[16px] sm:text-[20px] placeholder:text-black/22 text-left"
+                        />
+                        <button 
+                          disabled={loading || !chatInput.trim()}
+                          className="absolute right-3 bottom-3 sm:right-3.5 sm:bottom-3.5 w-11 h-11 sm:w-12 sm:h-12 bg-[#1A1A1A] text-white rounded-[1rem] sm:rounded-[1.15rem] flex items-center justify-center disabled:opacity-20 transition-all shadow-[0_12px_24px_rgba(0,0,0,0.16)] active:scale-95"
+                        >
+                          {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                        </button>
+                      </div>
+                    </form>
+
+                    <div className="flex flex-col items-center gap-3">
+                      <button
+                        onClick={() => setHomeActionsOpen((prev) => !prev)}
+                        className="inline-flex w-full max-w-md items-center justify-between rounded-[1.1rem] border border-black/[0.05] bg-white/74 px-4 py-3 text-[13px] font-semibold text-[#1A1A1A]/60 shadow-[0_10px_22px_rgba(17,24,39,0.04)] transition-all active:scale-95"
+                      >
+                        <span className="flex items-center gap-2.5">
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-50 text-violet-500">
+                            <Sparkles size={13} />
+                          </span>
+                          功能
+                        </span>
+                        <ChevronRight
+                          size={15}
+                          className={cn(
+                            "transition-transform duration-200",
+                            homeActionsOpen && "rotate-90"
+                          )}
+                        />
+                      </button>
+
+                      <AnimatePresence initial={false}>
+                        {homeActionsOpen && (
+                          <motion.div
+                            initial={{ opacity: 0, y: -6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -6 }}
+                            className="flex w-full max-w-md flex-col gap-2.5"
+                          >
+                            {[
+                              { label: '一键成行', icon: Zap, onClick: () => handleModeChange('plan') },
+                              { label: '今天看什么', icon: CalendarCheck, onClick: () => handleModeChange('events') },
+                              { label: '今日吃什么', icon: Utensils, onClick: () => handleModeChange('dining') },
+                              { label: '穿搭建议', icon: Shirt, onClick: () => handleModeChange('style') },
+                              { label: '会员中心', icon: Crown, onClick: () => handleModeChange('member') },
+                            ].map((item) => {
+                              const Icon = item.icon;
+                              return (
+                                <button
+                                  key={item.label}
+                                  onClick={() => {
+                                    setHomeActionsOpen(false);
+                                    item.onClick();
+                                  }}
+                                  className="inline-flex w-full items-center justify-between rounded-[1.1rem] border border-black/[0.05] bg-white/74 px-4 py-3 text-[13px] font-semibold text-[#1A1A1A]/58 shadow-[0_10px_22px_rgba(17,24,39,0.04)] transition-all active:scale-95"
+                                >
+                                  <span className="flex items-center gap-2.5">
+                                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black/[0.03] text-[#1A1A1A]/58">
+                                      <Icon size={13} />
+                                    </span>
+                                    {item.label}
+                                  </span>
+                                  <ChevronRight size={14} className="text-[#1A1A1A]/22" />
+                                </button>
+                              );
+                            })}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+
+                  </div>
+                </div>
+
               </div>
 
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.16 }}
-                className="relative flex items-center justify-center min-h-0 px-1 sm:px-0"
-              >
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="w-[88%] sm:w-[78%] h-[78%] rounded-full bg-[radial-gradient(circle,_rgba(141,128,255,0.14),_rgba(255,255,255,0))] blur-3xl" />
-                </div>
-
-                {smartBanner && (
-                  <motion.div
-                    animate={{ y: [0, -5, 0] }}
-                    transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
-                    className="absolute top-[7%] sm:top-[17%] left-1 sm:left-0 max-w-[34%] sm:max-w-[46%] px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-[1.1rem] sm:rounded-[1.35rem] bg-white/34 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.1)]"
-                  >
-                    <p className="text-[9px] sm:text-[10px] font-semibold text-[#1A1A1A]/70 leading-snug">
-                      {smartBanner.icon} {smartBanner.text}
-                    </p>
-                  </motion.div>
-                )}
-
-                <motion.button
-                  animate={{ y: [0, -4, 0] }}
-                  transition={{ duration: 6, repeat: Infinity, ease: 'easeInOut' }}
-                  onClick={() => handleQuickPlan(homePrimaryPreset)}
-                  disabled={quickPlanLoadingId !== null || todayLoading}
-                  className={cn(
-                    "relative w-full max-w-[22rem] sm:max-w-[30rem] overflow-hidden rounded-[1.9rem] sm:rounded-[2.25rem] border border-white/50 bg-white/40 backdrop-blur-[22px] px-4 sm:px-5 py-4 sm:py-6 text-left shadow-[0_26px_70px_rgba(103,97,191,0.14)] active:scale-[0.985] transition-all",
-                    quickPlanLoadingId === homePrimaryPreset.id && "opacity-75"
-                  )}
+              <div className="absolute inset-x-0 bottom-3 flex justify-center">
+                <motion.p
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.12 }}
+                  className="text-center text-[11px] sm:text-[12px] uppercase tracking-[0.28em] font-semibold text-[#1A1A1A]/22"
                 >
-                  <div className="absolute inset-0 bg-[linear-gradient(140deg,rgba(255,255,255,0.58),rgba(255,255,255,0.14)_55%,rgba(176,162,255,0.18))]" />
-                  <div className="absolute -right-10 top-8 h-24 sm:h-28 w-24 sm:w-28 rounded-full bg-violet-200/30 blur-3xl" />
-                  <div className="absolute -left-8 bottom-3 h-20 sm:h-24 w-20 sm:w-24 rounded-full bg-sky-200/25 blur-3xl" />
-
-                  <div className="relative space-y-4 sm:space-y-5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="space-y-2 min-w-0">
-                        <p className="text-[10px] uppercase tracking-[0.22em] font-bold text-[#1A1A1A]/28">
-                          Today feels like
-                        </p>
-                        {todayLoading ? (
-                          <div className="h-16 flex items-center">
-                            <Loader2 size={18} className="animate-spin text-indigo-400" />
-                          </div>
-                        ) : (
-                          <>
-                            <h3 className="text-[1.45rem] sm:text-[1.85rem] font-bold tracking-[-0.05em] text-[#1A1A1A] leading-[1.02]">
-                              {todaySummary?.headline ?? '今天适合轻松来逛'}
-                            </h3>
-                            <p className="text-[12px] sm:text-[13px] leading-relaxed text-[#1A1A1A]/50 max-w-[14rem] sm:max-w-[18rem]">
-                              {todaySummary?.recommendedAction ?? '先给你一条今天可以直接走的轻量路线。'}
-                            </p>
-                          </>
-                        )}
-                      </div>
-                      <div className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-full bg-black/[0.04] text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/54 whitespace-nowrap">
-                        {homePrimaryPreset.emoji} {homePrimaryPreset.label}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      {homeStatusItems.map((item) => (
-                        <span
-                          key={item.label}
-                          className="px-2.5 sm:px-3 py-1.5 rounded-full bg-white/34 border border-white/45 text-[9px] sm:text-[10px] font-semibold text-[#1A1A1A]/58"
-                        >
-                          {item.label} · {item.value}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-[11px] font-semibold text-[#1A1A1A]/38">直接帮我安排</p>
-                        <p className="text-[11px] sm:text-[12px] text-[#1A1A1A]/58 mt-0.5">
-                          {homePrimaryPreset.desc}
-                        </p>
-                      </div>
-                      <div className="w-11 h-11 rounded-[1.1rem] bg-[#1A1A1A] text-white flex items-center justify-center shadow-[0_10px_24px_rgba(0,0,0,0.16)] flex-shrink-0">
-                        {quickPlanLoadingId === homePrimaryPreset.id ? (
-                          <Loader2 size={16} className="animate-spin text-white/80" />
-                        ) : (
-                          <Navigation size={16} />
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </motion.button>
-
-                <motion.button
-                  animate={{ y: [0, -8, 0] }}
-                  transition={{ duration: 5.6, repeat: Infinity, ease: 'easeInOut' }}
-                  onClick={() => handleModeChange('events')}
-                  className="absolute top-[13%] sm:top-[23%] right-1 sm:right-0 w-[6.5rem] sm:w-[8.9rem] px-2.5 sm:px-3.5 py-2.5 sm:py-3 rounded-[1.2rem] sm:rounded-[1.5rem] bg-white/30 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.11)] text-left active:scale-[0.98] transition-all"
-                >
-                  <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/72">
-                    <CalendarCheck size={12} />
-                    今天看什么
-                  </div>
-                  <p className="hidden sm:block text-[10px] text-[#1A1A1A]/42 leading-snug mt-1.5">
-                    先看今天最值得去的活动
-                  </p>
-                </motion.button>
-
-                <motion.button
-                  animate={{ y: [0, 7, 0] }}
-                  transition={{ duration: 6.4, repeat: Infinity, ease: 'easeInOut' }}
-                  onClick={() => handleQuickPlan(homeSpotlightPreset)}
-                  disabled={quickPlanLoadingId !== null}
-                  className="absolute left-1 sm:left-0 bottom-[16%] sm:bottom-[18%] w-[6.9rem] sm:w-[9.4rem] px-2.5 sm:px-3.5 py-2.5 sm:py-3 rounded-[1.2rem] sm:rounded-[1.55rem] bg-white/30 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.11)] text-left active:scale-[0.98] transition-all"
-                >
-                  <p className="text-[9px] sm:text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25">
-                    Spotlight
-                  </p>
-                  <AnimatePresence mode="wait">
-                    <motion.div
-                      key={homeSpotlightPreset.id}
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.22 }}
-                      className="mt-1.5"
-                    >
-                      <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[12px] font-semibold text-[#1A1A1A]/74">
-                        <span>{homeSpotlightPreset.emoji}</span>
-                        <span>{homeSpotlightPreset.label}</span>
-                      </div>
-                      <p className="hidden sm:block text-[10px] text-[#1A1A1A]/42 leading-snug mt-1">
-                        {homeSpotlightPreset.desc}
-                      </p>
-                    </motion.div>
-                  </AnimatePresence>
-                </motion.button>
-
-                <motion.button
-                  animate={{ y: [0, -6, 0] }}
-                  transition={{ duration: 5.9, repeat: Infinity, ease: 'easeInOut' }}
-                  onClick={() => handleModeChange(lastUserPrompt ? 'chat' : 'dining')}
-                  className="absolute right-1 sm:right-3 bottom-[6%] sm:bottom-0 w-[7.1rem] sm:w-[10rem] px-2.5 sm:px-3.5 py-2.5 sm:py-3 rounded-[1.2rem] sm:rounded-[1.55rem] bg-white/28 backdrop-blur-xl border border-white/45 shadow-[0_18px_40px_rgba(108,114,255,0.11)] text-left active:scale-[0.98] transition-all"
-                >
-                  <div className="flex items-center gap-1.5 sm:gap-2 text-[10px] sm:text-[11px] font-semibold text-[#1A1A1A]/72">
-                    {lastUserPrompt ? <Sparkles size={12} /> : <Utensils size={12} />}
-                    {lastUserPrompt ? '继续对话' : '现在吃什么'}
-                  </div>
-                  <p className="hidden sm:block text-[10px] text-[#1A1A1A]/42 leading-snug mt-1.5 truncate">
-                    {lastUserPrompt || '顺路找一家更适合现在的餐厅'}
-                  </p>
-                </motion.button>
-              </motion.div>
-
-              <div className="space-y-2.5 sm:space-y-3 pb-1 sm:pb-2">
-                <form onSubmit={handleHomeChatSubmit} className="relative group">
-                  <div className="absolute -inset-1 rounded-[2rem] bg-gradient-to-r from-violet-300/14 via-sky-300/12 to-amber-200/12 blur-md opacity-0 group-focus-within:opacity-100 transition duration-500" />
-                  <div className="relative rounded-[1.6rem] sm:rounded-[2rem] border border-white/50 bg-white/40 backdrop-blur-[22px] shadow-[0_18px_48px_rgba(103,97,191,0.11)]">
-                  <input 
-                    type="text"
-                      placeholder="今天想怎么逛？"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                      className="w-full bg-transparent rounded-[1.6rem] sm:rounded-[2rem] py-3.5 sm:py-4 pl-5 sm:pl-6 pr-16 focus:outline-none font-medium text-[#1A1A1A] text-[14px] sm:text-[15px] placeholder:text-black/24"
-                  />
-                  <button 
-                    disabled={loading || !chatInput.trim()}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 w-10 h-10 sm:w-11 sm:h-11 bg-[#1A1A1A] text-white rounded-[1rem] sm:rounded-[1.15rem] flex items-center justify-center disabled:opacity-20 transition-all shadow-[0_12px_24px_rgba(0,0,0,0.16)] active:scale-95"
-                  >
-                      {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={17} />}
-                  </button>
-                  </div>
-                </form>
-
-                <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:overflow-x-auto no-scrollbar pb-1">
-                  {homeChatSuggestions.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      onClick={async () => {
-                        setChatInput('');
-                        await openFreshChat(suggestion);
-                      }}
-                      className="px-3.5 py-2 rounded-full bg-white/28 backdrop-blur-xl border border-white/45 text-[11px] font-medium text-[#1A1A1A]/56 whitespace-nowrap shadow-[0_12px_28px_rgba(103,97,191,0.09)] active:scale-95 transition-all"
-                    >
-                      {suggestion}
-                    </button>
-                  ))}
-
-                  {[
-                    { mode: 'style' as const, label: '穿搭建议', icon: Shirt },
-                    { mode: 'member' as const, label: '会员中心', icon: Crown },
-                  ].map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <button
-                        key={item.mode}
-                        onClick={() => handleModeChange(item.mode)}
-                        className="px-3.5 py-2 rounded-full bg-white/24 backdrop-blur-xl border border-white/45 text-[11px] font-medium text-[#1A1A1A]/54 whitespace-nowrap shadow-[0_12px_28px_rgba(103,97,191,0.08)] active:scale-95 transition-all flex items-center gap-1.5"
-                      >
-                        <Icon size={12} />
-                        {item.label}
-                      </button>
-                    );
-                  })}
-                </div>
+                  Personal Mall AI
+                </motion.p>
               </div>
             </motion.div>
           )}
@@ -1171,9 +1625,142 @@ export default function App() {
             </motion.div>
           )}
 
+          {mode === 'plan' && !activePlan && (
+            <motion.div
+              key="plan-builder"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-4"
+            >
+              <div className="space-y-1">
+                <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">Quick Plan</p>
+                <h3 className="text-2xl font-bold tracking-tight text-[#1A1A1A]">一键成行</h3>
+                <p className="text-sm text-[#1A1A1A]/38 leading-relaxed">先选你的状态，我再给你一条更顺的路线。</p>
+              </div>
+
+              <div className="bg-white rounded-[2rem] border border-black/8 p-4 shadow-sm space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="text-[10px] uppercase tracking-[0.18em] font-bold text-[#1A1A1A]/25">Quick Plan</p>
+                    <p className="text-[18px] font-bold text-[#1A1A1A] leading-tight">按和谁去、几个人、待多久，直接给路线</p>
+                  </div>
+                  <p className="text-[11px] font-medium text-[#1A1A1A]/32 whitespace-nowrap">{planPreferences.people >= 5 ? '5+ 人' : `${planPreferences.people} 人`}</p>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {planSceneOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      onClick={() => setPlanPreferences((prev) => ({
+                        ...prev,
+                        sceneId: option.id,
+                        people: option.defaultPeople,
+                      }))}
+                      className={cn(
+                        "rounded-[1.25rem] border p-3 text-left transition-all active:scale-[0.98]",
+                        planPreferences.sceneId === option.id
+                          ? "bg-[linear-gradient(135deg,#E0D2F0_0%,#CCB8E4_100%)] text-[#503D6A] border-[#BFA8DB] shadow-[0_14px_32px_rgba(122,98,158,0.20)]"
+                          : "bg-[#F5F4F7] text-[#1A1A1A] border-black/6"
+                      )}
+                    >
+                      <div className="text-lg leading-none">{option.emoji}</div>
+                      <p className="mt-3 text-[13px] font-bold">{option.title}</p>
+                      <p className={cn(
+                        "text-[11px] mt-1",
+                        planPreferences.sceneId === option.id ? "text-[#503D6A]/62" : "text-[#1A1A1A]/40"
+                      )}>
+                        {option.subtitle}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Users size={14} className="text-[#1A1A1A]/38" />
+                    {planPeopleOptions.map((count) => (
+                      <button
+                        key={count}
+                        onClick={() => setPlanPreferences((prev) => ({ ...prev, people: count }))}
+                        className={cn(
+                          "px-3.5 py-2 rounded-full text-[12px] font-semibold border transition-all active:scale-95",
+                          planPreferences.people === count
+                            ? "bg-[#ECE0F8] text-[#664D8C] border-[#DAC6EE] shadow-sm"
+                            : "bg-white text-[#1A1A1A]/65 border-black/10"
+                        )}
+                      >
+                        {count === 5 ? '5+' : `${count} 人`}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Clock size={14} className="text-[#1A1A1A]/38" />
+                    {planDurationOptions.map((duration) => (
+                      <button
+                        key={duration}
+                        onClick={() => setPlanPreferences((prev) => ({ ...prev, durationHours: duration }))}
+                        className={cn(
+                          "px-3.5 py-2 rounded-full text-[12px] font-semibold border transition-all active:scale-95",
+                          planPreferences.durationHours === duration
+                            ? "bg-[#F1E9E4] text-[#81685E] border-[#E6D9D1] shadow-sm"
+                            : "bg-white text-[#1A1A1A]/65 border-black/10"
+                        )}
+                      >
+                        {duration}h
+                      </button>
+                    ))}
+                    <span className="ml-auto text-[11px] font-medium text-[#1A1A1A]/35">约 ¥ {planPreferences.durationHours * 90 + Math.max(planPreferences.people - 1, 0) * 40}+</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles size={14} className="text-[#1A1A1A]/38" />
+                    <p className="text-[11px] font-medium text-[#1A1A1A]/42">这条路线更想包含什么？</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {planContentOptions.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => togglePlanContentPreference(item)}
+                        className={cn(
+                          "px-3.5 py-2 rounded-full text-[12px] font-semibold border transition-all active:scale-95",
+                          planPreferences.contentPreferences.includes(item)
+                            ? "bg-[#EEE4F5] text-[#6B5A86] border-[#DDCFEA] shadow-sm"
+                            : "bg-white text-[#1A1A1A]/65 border-black/10"
+                        )}
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleGenerateCustomPlan}
+                  disabled={planGenerating}
+                  className="w-full flex items-center justify-between px-4 py-4 rounded-[1.6rem] bg-[linear-gradient(135deg,#8F73C6_0%,#755CA9_100%)] border border-[#A88ED6] text-white text-left transition-all shadow-[0_18px_38px_rgba(117,92,169,0.28)] active:scale-[0.98]"
+                >
+                  <div className="min-w-0">
+                    <p className="text-[15px] font-bold">生成适合你的路线</p>
+                    <p className="text-[12px] text-white/68 mt-1">{selectedPlanScene.title} · {planPreferences.people >= 5 ? '5+ 人' : `${planPreferences.people} 人`} · {planPreferences.durationHours} 小时</p>
+                  </div>
+                  {planGenerating ? (
+                    <Loader2 size={16} className="animate-spin text-white/75 flex-shrink-0" />
+                  ) : (
+                    <ChevronRight size={16} className="text-white/72 flex-shrink-0" />
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          )}
+
           {mode === 'plan' && activePlan && (
                 <motion.div
-              key="plan"
+              key="plan-result"
               initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
@@ -1187,8 +1774,8 @@ export default function App() {
 
               <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-4">
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-2xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
-                    <Sparkles size={16} className="text-indigo-500" />
+                  <div className="w-10 h-10 rounded-2xl bg-[#ECE0F8] flex items-center justify-center flex-shrink-0">
+                    <Sparkles size={16} className="text-[#755CA9]" />
                   </div>
                   <div className="space-y-1">
                     <p className="text-sm font-bold text-[#1A1A1A]">今天的路线建议</p>
@@ -1198,16 +1785,48 @@ export default function App() {
 
                 <div className="rounded-2xl bg-black/[0.025] border border-black/5 overflow-hidden">
                   <div className="px-4 pt-3 pb-1 border-b border-black/5">
-                    <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">路线时间线</p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-bold text-[#755CA9] uppercase tracking-wider">路线时间线</p>
+                      {planEditOpen && (
+                        <p className="text-[10px] font-medium text-[#755CA9]/55">点选其中一步后再输入修改指令</p>
+                      )}
+                    </div>
                   </div>
                   <div className="px-4 py-2 space-y-0">
                     {activePlan.plan.steps.map((step, i) => (
-                      <div key={i} className="flex items-start gap-3 py-2 border-b border-black/5 last:border-0">
-                        <div className="w-5 h-5 rounded-full bg-indigo-50 flex items-center justify-center flex-shrink-0 mt-0.5">
-                          <span className="text-[10px] font-black text-indigo-500">{i + 1}</span>
+                      <button
+                        key={i}
+                        type="button"
+                        disabled={!planEditOpen}
+                        onClick={() => {
+                          setSelectedPlanStepIndex(i);
+                          setPlanEditNote(null);
+                        }}
+                        className={cn(
+                          "flex w-full items-start gap-3 py-2 border-b border-black/5 last:border-0 text-left transition-all",
+                          planEditOpen && "rounded-xl px-2",
+                          planEditOpen && selectedPlanStepIndex === i && "bg-[#F6F0FB]",
+                          recentlyEditedPlanStepIndex === i && "bg-[#F3ECFB]",
+                          planEditOpen ? "active:scale-[0.99]" : "cursor-default"
+                        )}
+                      >
+                        <div className={cn(
+                          "w-5 h-5 rounded-full bg-[#ECE0F8] flex items-center justify-center flex-shrink-0 mt-0.5 transition-all",
+                          planEditOpen && selectedPlanStepIndex === i && "bg-[#DCCAF2]",
+                          recentlyEditedPlanStepIndex === i && "bg-[#D8C3F3]"
+                        )}>
+                          <span className="text-[10px] font-black text-[#755CA9]">{i + 1}</span>
                         </div>
-                        <p className="text-[12px] text-[#1A1A1A]/70 font-medium leading-snug">{step}</p>
-                      </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[12px] text-[#1A1A1A]/70 font-medium leading-snug">{step}</p>
+                          {planEditOpen && selectedPlanStepIndex === i && (
+                            <p className="mt-1 text-[10px] font-medium text-[#755CA9]/60">当前准备修改这一步</p>
+                          )}
+                          {!planEditOpen && recentlyEditedPlanStepIndex === i && (
+                            <p className="mt-1 text-[10px] font-medium text-[#755CA9]/60">刚刚已更新这一步</p>
+                          )}
+                        </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -1216,31 +1835,119 @@ export default function App() {
                   <Quote size={13} className="text-amber-500 mt-0.5 flex-shrink-0" />
                   <p className="text-[12px] text-amber-900/65 leading-relaxed">{activePlan.plan.tip}</p>
                 </div>
+
+                <AnimatePresence initial={false}>
+                  {planEditOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      className="rounded-2xl border border-[#E5DAEF] bg-[#FCFAFF] p-4 space-y-3"
+                    >
+                      <div className="space-y-1">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#755CA9]/58">Continue With AI</p>
+                        {recentlyEditedPlanStepIndex !== null && (
+                          <div className="inline-flex rounded-full bg-[#F1E8FB] px-2.5 py-1 text-[10px] font-semibold text-[#755CA9]">
+                            已更新第 {recentlyEditedPlanStepIndex + 1} 步
+                          </div>
+                        )}
+                        <p className="text-[13px] font-semibold text-[#1A1A1A]">
+                          {selectedPlanStepIndex === null
+                            ? '先点选上面想改的一步，再输入你的修改要求'
+                            : `正在调整第 ${selectedPlanStepIndex + 1} 步`}
+                        </p>
+                        {selectedPlanStepIndex !== null && (
+                          <p className="text-[12px] leading-relaxed text-[#1A1A1A]/48">
+                            {activePlan.plan.steps[selectedPlanStepIndex]}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { id: 'single', label: '只改这一步' },
+                          { id: 'cascade', label: '联动后续路线' },
+                        ].map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setPlanEditScope(item.id as 'single' | 'cascade')}
+                            className={cn(
+                              "text-[11px] font-semibold px-3 py-1.5 rounded-full border transition-all active:scale-95",
+                              planEditScope === item.id
+                                ? "bg-[#EEE4F8] border-[#DDCFF0] text-[#6A5890]"
+                                : "bg-white border-[#E5DAEF] text-[#6C617F]"
+                            )}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <form onSubmit={handlePlanStepEditSubmit} className="space-y-3">
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={planEditInput}
+                            onChange={(e) => setPlanEditInput(e.target.value)}
+                            placeholder={selectedPlanStepIndex === null ? '先点选一个路线节点' : '比如：把这一步换成更便宜的餐厅'}
+                            disabled={selectedPlanStepIndex === null || planEditLoading}
+                            className="flex-1 rounded-2xl border border-[#E5DAEF] bg-white px-4 py-3 text-sm text-[#1A1A1A] placeholder:text-[#1A1A1A]/28 focus:outline-none focus:ring-2 focus:ring-[#8F73C6]/18"
+                          />
+                          <button
+                            type="submit"
+                            disabled={selectedPlanStepIndex === null || !planEditInput.trim() || planEditLoading}
+                            className="px-4 py-3 rounded-2xl bg-[linear-gradient(135deg,#8F73C6_0%,#755CA9_100%)] border border-[#A88ED6] text-white text-sm font-bold disabled:opacity-45 active:scale-[0.98] transition-all"
+                          >
+                            {planEditLoading ? <Loader2 size={16} className="animate-spin" /> : '调整这一步'}
+                          </button>
+                        </div>
+
+                        {planEditNote && (
+                          <div className="rounded-2xl bg-[#F4ECFB] px-3.5 py-3 text-[12px] leading-relaxed text-[#5E5179]">
+                            {planEditNote}
+                          </div>
+                        )}
+                      </form>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
                   <button
                     onClick={() => {
-                    if (activePlan.plan.action === 'dining' || activePlan.plan.action === 'events') {
-                      handleModeChange(activePlan.plan.action);
-                    }
-                  }}
-                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-[#1A1A1A] text-white text-sm font-bold active:scale-[0.98] transition-all"
+                      setPlanEditOpen((prev) => {
+                        const next = !prev;
+                        if (!next) {
+                          setSelectedPlanStepIndex(null);
+                          setPlanEditInput('');
+                          setPlanEditNote(null);
+                          setPlanEditScope('single');
+                        }
+                        return next;
+                      });
+                    }}
+                  className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-[linear-gradient(135deg,#8F73C6_0%,#755CA9_100%)] border border-[#A88ED6] text-white text-sm font-bold shadow-[0_14px_30px_rgba(117,92,169,0.22)] active:scale-[0.98] transition-all"
                 >
-                  <ChevronRight size={14} />
-                  {activePlan.plan.actionLabel ?? '继续下一步'}
+                  <Sparkles size={14} />
+                  {planEditOpen ? '收起微调' : '微调路线'}
                   </button>
                     <button
-                  onClick={async () => {
-                    const prompt = `${activePlan.title}，帮我继续细化这条路线`;
-                    await openFreshChat(prompt);
-                  }}
+                  onClick={() => { void openPlanChatFollowup(); }}
                   className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-white border border-black/8 text-[#1A1A1A] text-sm font-bold shadow-sm active:scale-[0.98] transition-all"
                 >
                   <Send size={14} />
                   继续问 AI
                     </button>
               </div>
+
+              <button
+                onClick={() => openPlanBuilder()}
+                className="w-full px-4 py-3 rounded-2xl bg-white border border-black/8 text-[#1A1A1A]/60 text-sm font-semibold shadow-sm active:scale-[0.98] transition-all"
+              >
+                重新选条件
+              </button>
 
               {activePlan.plan.suggestions.length > 0 && (
                 <div className="flex flex-wrap gap-2">
@@ -1271,8 +1978,8 @@ export default function App() {
             >
               {/* Messages */}
               <div className="flex-1 overflow-y-auto px-4 pt-4 pb-2 space-y-4 min-h-0">
-                {fullChatHistory.map((msg, i) => {
-                  const isLastAi = msg.role === 'ai' && i === fullChatHistory.length - 1;
+                {fullChatHistory.filter((msg) => !msg.hidden).map((msg, i, visibleHistory) => {
+                  const isLastAi = msg.role === 'ai' && i === visibleHistory.length - 1;
                   const displayText = isLastAi && chatStreaming ? chatStreaming : msg.text;
                   return (
                     <div key={i} className={cn("flex flex-col", msg.role === 'user' ? 'items-end' : 'items-start')}>
@@ -1305,7 +2012,7 @@ export default function App() {
                                 <div className="w-5 h-5 rounded-full bg-indigo-50 flex items-center justify-center flex-shrink-0 mt-0.5">
                                   <span className="text-[10px] font-black text-indigo-500">{si + 1}</span>
                                 </div>
-                                <p className="text-[12px] text-[#1A1A1A]/70 font-medium leading-snug">{step.replace(/^[①②③④⑤⑥]\s*/, '')}</p>
+                                <p className="text-[12px] text-[#1A1A1A]/70 font-medium leading-snug">{step.replace(/^(?:[①②③④⑤⑥]|\d+\.)\s*/, '')}</p>
                               </div>
                             ))}
                           </div>
@@ -1429,13 +2136,13 @@ export default function App() {
                         className={cn(
                           "flex flex-col items-start gap-0.5 px-4 py-3.5 rounded-2xl border transition-all text-left",
                           mealType === label
-                            ? "bg-[#1A1A1A] border-[#1A1A1A] text-white shadow-md"
-                            : "bg-white border-black/8 text-[#1A1A1A]/50 hover:border-black/20"
+                            ? "bg-[linear-gradient(135deg,#E4DBEF_0%,#D4C7E4_100%)] border-[#CCBDE0] text-[#564A6C] shadow-[0_12px_30px_rgba(122,98,158,0.18)]"
+                            : "bg-white border-black/8 text-[#1A1A1A]/50 hover:border-[#DDD4E2]"
                         )}
                       >
                         <span className="text-xl leading-none mb-1">{emoji}</span>
                         <span className="text-sm font-bold leading-none">{label}</span>
-                        <span className={cn("text-[10px] leading-none mt-0.5", mealType === label ? "text-white/50" : "text-[#1A1A1A]/25")}>{sub}</span>
+                        <span className={cn("text-[10px] leading-none mt-0.5", mealType === label ? "text-[#564A6C]/58" : "text-[#1A1A1A]/25")}>{sub}</span>
                       </button>
                     ))}
                   </div>
@@ -1457,13 +2164,15 @@ export default function App() {
                           type="button"
                           onClick={() => setScene(scene === label ? '' : label)}
                           className={cn(
-                            "flex flex-col items-center gap-1 py-3 transition-all relative",
-                            scene === label ? "opacity-100" : "opacity-40 hover:opacity-70"
+                            "mx-1 my-1 flex flex-col items-center gap-1 rounded-[1rem] border py-3 transition-all relative",
+                            scene === label
+                              ? "border-[#E9DDD2] bg-[#F8F2EC] opacity-100 shadow-[0_8px_20px_rgba(126,108,94,0.08)]"
+                              : "border-transparent opacity-40 hover:opacity-70"
                           )}
                         >
                           <span className="text-xl leading-none">{emoji}</span>
-                          <span className={cn("text-[11px] font-semibold leading-none", scene === label ? "text-indigo-600" : "text-[#1A1A1A]")}>{label}</span>
-                          {scene === label && <span className="absolute bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-0.5 bg-indigo-500 rounded-full" />}
+                          <span className={cn("text-[11px] font-semibold leading-none", scene === label ? "text-[#7A665C]" : "text-[#1A1A1A]")}>{label}</span>
+                          {scene === label && <span className="absolute bottom-1.5 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-[#B89A8A] rounded-full" />}
                         </button>
                       ))}
                     </div>
@@ -1485,14 +2194,14 @@ export default function App() {
                           type="button"
                           onClick={() => toggleEnvPref(label)}
                           className={cn(
-                            "flex flex-col items-center gap-1 py-2 rounded-xl transition-all",
+                            "flex flex-col items-center gap-1 rounded-xl border py-2 transition-all",
                             envPrefs.includes(label)
-                              ? "bg-indigo-50"
-                              : "opacity-35 hover:opacity-60"
+                              ? "border-[#E7DDD3] bg-[#F7F2EC] shadow-[0_6px_18px_rgba(126,108,94,0.06)]"
+                              : "border-transparent opacity-35 hover:opacity-60"
                           )}
                         >
                           <span className="text-base leading-none">{emoji}</span>
-                          <span className={cn("text-[9px] font-semibold leading-tight text-center px-0.5", envPrefs.includes(label) ? "text-indigo-600" : "text-[#1A1A1A]")}>{label}</span>
+                          <span className={cn("text-[9px] font-semibold leading-tight text-center px-0.5", envPrefs.includes(label) ? "text-[#7A665C]" : "text-[#1A1A1A]")}>{label}</span>
                         </button>
                       ))}
                     </div>
@@ -1512,12 +2221,12 @@ export default function App() {
                           className={cn(
                             "flex items-center gap-1.5 text-[11px] font-medium transition-all py-1",
                             envPrefs.includes(label)
-                              ? "text-[#1A1A1A]"
+                              ? "text-[#7A665C]"
                               : "text-[#1A1A1A]/25 hover:text-[#1A1A1A]/50"
                           )}
                         >
                           <span className={cn("w-4 h-4 rounded flex items-center justify-center text-[10px] transition-all",
-                            envPrefs.includes(label) ? "bg-[#1A1A1A] text-white" : "bg-black/8"
+                            envPrefs.includes(label) ? "bg-[#EADFD4] text-[#8B6E60]" : "bg-black/8"
                           )}>{emoji}</span>
                           {label}
                         </button>
@@ -1564,7 +2273,7 @@ export default function App() {
 
                   <button
                     disabled={loading}
-                    className="w-full bg-[#1A1A1A] text-white py-3.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 hover:bg-black disabled:opacity-50 transition-all shadow-lg active:scale-[0.98] mt-auto"
+                    className="w-full bg-[linear-gradient(135deg,#E3D8F0_0%,#D2C3E7_100%)] text-[#55476E] py-3.5 rounded-2xl border border-[#EADFF5] font-bold text-sm flex items-center justify-center gap-2 disabled:opacity-50 transition-all shadow-[0_16px_36px_rgba(122,98,158,0.20)] active:scale-[0.98] mt-auto"
                   >
                     {loading ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={15} />}
                     获取推荐
@@ -1701,7 +2410,35 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-6"
             >
-              {!result ? (
+              {styleAnalysisResult ? (
+                <div className="space-y-6">
+                  <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="glass rounded-[2rem] p-8 overflow-hidden relative"
+                  >
+                    <div className="absolute top-0 left-0 w-1.5 h-full bg-amber-600" />
+                    <div className="prose max-w-none prose-amber text-sm">
+                      <ReactMarkdown>{styleAnalysisResult}</ReactMarkdown>
+                    </div>
+                  </motion.div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button 
+                      onClick={() => setStyleAnalysisResult(null)}
+                      className="py-4 border border-black/5 rounded-2xl hover:bg-black/5 transition-all text-[#1A1A1A]/60 font-medium text-sm"
+                    >
+                      返回筛选推荐
+                    </button>
+                    <button 
+                      onClick={handleOpenStyleCamera}
+                      className="py-4 bg-[#1A1A1A] text-white rounded-2xl transition-all font-medium text-sm active:scale-[0.98]"
+                    >
+                      重新拍照分析
+                    </button>
+                  </div>
+                  <canvas ref={canvasRef} className="hidden" />
+                </div>
+              ) : styleCameraOpen ? (
                 <div className="space-y-6">
                   <div className="relative aspect-[3/4] bg-neutral-100 rounded-[2rem] overflow-hidden shadow-xl border border-black/5">
                     {stream ? (
@@ -1718,8 +2455,7 @@ export default function App() {
                         <p className="text-xs font-medium tracking-widest uppercase text-black/20">正在启动镜头</p>
                       </div>
                     )}
-                    
-                    {/* Viewfinder Overlay */}
+
                     <div className="absolute inset-0 border-[30px] border-white/40 pointer-events-none" />
                     <div className="absolute top-8 left-8 w-6 h-6 border-t-2 border-l-2 border-black/10" />
                     <div className="absolute top-8 right-8 w-6 h-6 border-t-2 border-r-2 border-black/10" />
@@ -1741,32 +2477,146 @@ export default function App() {
                   </div>
                   
                   <div className="text-center space-y-2">
-                    <h3 className="text-xl font-semibold text-[#1A1A1A]">视觉分析</h3>
-                    <p className="text-[#1A1A1A]/40 text-sm leading-relaxed max-w-xs mx-auto">请在镜头前展示你的穿搭，我们将为你提供专业建议。</p>
+                    <h3 className="text-xl font-semibold text-[#1A1A1A]">拍照分析</h3>
+                    <p className="text-[#1A1A1A]/40 text-sm leading-relaxed max-w-xs mx-auto">拍一张你的当前穿搭，我会结合商场动线给你更适合逛的店铺建议。</p>
                   </div>
+                  <button
+                    onClick={handleCloseStyleCamera}
+                    className="w-full py-4 border border-black/5 rounded-2xl hover:bg-black/5 transition-all text-[#1A1A1A]/60 font-medium text-sm"
+                  >
+                    返回筛选推荐
+                  </button>
                   <canvas ref={canvasRef} className="hidden" />
                 </div>
               ) : (
                 <div className="space-y-6">
-                  <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="glass rounded-[2rem] p-8 overflow-hidden relative"
-                  >
-                    <div className="absolute top-0 left-0 w-1.5 h-full bg-amber-600" />
-                    <div className="prose max-w-none prose-amber text-sm">
-                      <ReactMarkdown>{typeof result === 'string' ? result : ''}</ReactMarkdown>
+                  <div className="space-y-2">
+                    <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">Style Finder</p>
+                    <h3 className="text-2xl font-bold tracking-tight text-[#1A1A1A]">衣服店铺推荐</h3>
+                    <p className="text-sm text-[#1A1A1A]/40 leading-relaxed">
+                      先按季节、场景和单品类型筛一遍，Cadence 会优先给你更适合逛的店铺区域。
+                    </p>
+                  </div>
+
+                  <div className="bg-white rounded-[2rem] border border-black/8 p-4 shadow-sm space-y-4">
+                    <div className="space-y-2">
+                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25">季节</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(['春夏', '秋冬'] as StyleSeason[]).map((item) => (
+                          <button
+                            key={item}
+                            onClick={() => setStyleSeason(item)}
+                            className={cn(
+                              "rounded-[1.25rem] px-4 py-3 text-sm font-semibold border transition-all active:scale-[0.98]",
+                              styleSeason === item
+                                ? "bg-[#E4DBEF] text-[#564A6C] border-[#CFC0E2] shadow-[0_8px_20px_rgba(122,98,158,0.16)]"
+                                : "bg-[#F6F4FA] text-[#1A1A1A]/60 border-black/6"
+                            )}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </motion.div>
-                  <button 
-                    onClick={() => {
-                      setResult(null);
-                      startCamera();
-                    }}
-                    className="w-full py-4 border border-black/5 rounded-2xl hover:bg-black/5 transition-all text-[#1A1A1A]/60 font-medium text-sm"
-                  >
-                    重新分析
-                  </button>
+
+                    <div className="space-y-2">
+                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25">场景</p>
+                      <div className="flex flex-wrap gap-2">
+                        {(['通勤', '约会', '休闲', '运动'] as StyleOccasion[]).map((item) => (
+                          <button
+                            key={item}
+                            onClick={() => setStyleOccasion(item)}
+                            className={cn(
+                              "px-3.5 py-2 rounded-full text-[12px] font-semibold border transition-all active:scale-95",
+                              styleOccasion === item
+                                ? "bg-[#EEE4F5] text-[#6B5A86] border-[#DDCFEA]"
+                                : "bg-white text-[#1A1A1A]/60 border-black/10"
+                            )}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25">我想找</p>
+                      <div className="flex flex-wrap gap-2">
+                        {(['上衣', '外套', '裙装', '裤装', '鞋包配饰'] as StyleCategory[]).map((item) => (
+                          <button
+                            key={item}
+                            onClick={() => setStyleCategory(item)}
+                            className={cn(
+                              "px-3.5 py-2 rounded-full text-[12px] font-semibold border transition-all active:scale-95",
+                              styleCategory === item
+                                ? "bg-[#EFE7E3] text-[#82655F] border-[#E4D5CE]"
+                                : "bg-white text-[#1A1A1A]/60 border-black/10"
+                            )}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 pt-2">
+                      <button
+                        onClick={handleStyleRecommend}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-3.5 rounded-[1.4rem] bg-[linear-gradient(135deg,#E3D8F0_0%,#D2C3E7_100%)] text-[#55476E] border border-[#EADFF5] shadow-[0_14px_30px_rgba(122,98,158,0.18)] font-semibold text-sm active:scale-[0.98] transition-all"
+                      >
+                        <Shirt size={15} />
+                        推荐适合逛的店铺
+                      </button>
+                      <button
+                        onClick={handleOpenStyleCamera}
+                        className="w-full sm:w-auto px-4 py-3.5 rounded-[1.4rem] border border-[#E3D8EC] bg-white/82 text-[#6C617F] font-medium text-sm hover:bg-white transition-all active:scale-[0.98]"
+                      >
+                        拍照分析
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {styleRecommendationApplied ? (
+                      styleSpotResults.map((spot) => (
+                        <div key={spot.id} className="bg-white rounded-[1.6rem] border border-black/8 p-4 shadow-sm space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="space-y-1">
+                              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25">{spot.floor}</p>
+                              <h4 className="text-[18px] font-bold text-[#1A1A1A] leading-tight">{spot.title}</h4>
+                              <p className="text-[12px] text-[#1A1A1A]/50 leading-relaxed">{spot.subtitle}</p>
+                            </div>
+                            <div className="w-10 h-10 rounded-2xl bg-[#F3F0FF] flex items-center justify-center flex-shrink-0">
+                              <Shirt size={16} className="text-[#6D63A8]" />
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            {spot.tags.map((tag) => (
+                              <span
+                                key={tag}
+                                className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-black/[0.03] text-[#1A1A1A]/55"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-[1.6rem] border border-dashed border-black/10 bg-white/70 px-5 py-6 text-center shadow-sm">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#1A1A1A]/28">
+                          Style Match
+                        </p>
+                        <p className="mt-2 text-[16px] font-semibold text-[#1A1A1A]">
+                          先选条件，再点击推荐店铺
+                        </p>
+                        <p className="mt-2 text-[13px] leading-relaxed text-[#1A1A1A]/45">
+                          我会根据你选的季节、场景和单品类型，推荐更适合先逛的楼层和店铺区域。
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </motion.div>
@@ -1781,13 +2631,9 @@ export default function App() {
               className="pb-6"
             >
               {(() => {
-                const activeEvents = MALL_EVENTS.filter(e => getEventStatus(e) !== 'ended');
-                const pastEvents = MALL_EVENTS.filter(e => getEventStatus(e) === 'ended');
-                const centeredEvent = activeEvents[centerEventIndex] ?? activeEvents[0];
-                const smartBanner = getSmartBanner();
-                const allScenes = [...new Set(activeEvents.flatMap(e => e.scenes))];
+                const carouselEvents = getCarouselEvents();
+                const centeredEvent = carouselEvents[centerEventIndex] ?? carouselEvents[0];
                 const sceneInsight = eventSceneFilter && centeredEvent?.sceneInsights?.[eventSceneFilter];
-                const upcomingSpotlight = activeEvents.find(e => getEventStatus(e) === 'future' && e.id !== centeredEvent?.id);
 
                 return (
                   <>
@@ -1796,48 +2642,19 @@ export default function App() {
                       <div className="flex items-baseline justify-between">
                 <h3 className="text-2xl font-bold tracking-tight">精彩活动</h3>
                         <span className="text-[11px] text-[#1A1A1A]/30 font-medium">
-                          {activeEvents.length} 个进行中 / 即将开始
+                          {carouselEvents.length} 个活动
                         </span>
                       </div>
               </div>
 
-                    {/* ── Smart timing banner ── */}
-                    {smartBanner && (
-                      <div className={cn("mx-5 mb-5 flex items-center gap-2 px-3 py-2 rounded-xl border text-[11px] font-medium", smartBanner.color)}>
-                        <span className="leading-none flex-shrink-0">{smartBanner.icon}</span>
-                        <p className="leading-snug">{smartBanner.text}</p>
-                      </div>
-                    )}
-
-                    {/* ── 场景筛选 chips ── */}
-                    <div className="px-5 mb-5">
-                      <div className="flex gap-2 flex-wrap">
-                        {allScenes.map(scene => (
-                          <button
-                            key={scene}
-                            onClick={() => handleSceneFilter(scene)}
-                            className={cn(
-                              "text-[12px] font-semibold px-3.5 py-1.5 rounded-full transition-all active:scale-95",
-                              eventSceneFilter === scene
-                                ? "bg-[#1A1A1A] text-white"
-                                : "bg-white border border-black/10 text-[#1A1A1A]/50"
-                            )}
-                          >
-                            {scene === '带小孩来玩' ? '👨‍👩‍👧 ' : scene === '两个人约会' ? '👫 ' : scene === '朋友聚会' ? '👥 ' : '🚶 '}
-                            {scene}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* ── Carousel（只展示进行中 + 即将开始） ── */}
+                    {/* ── Carousel（未来 / 进行中 / 已结束） ── */}
                 <div 
                   ref={eventsScrollRef}
                   onScroll={handleEventScroll}
                       className="flex gap-4 overflow-x-auto snap-x snap-mandatory pb-3 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                       style={{ paddingLeft: 'calc(11%)' }}
                     >
-                      {activeEvents.map((event, i) => {
+                      {carouselEvents.map((event, i) => {
                         const dist = Math.abs(i - centerEventIndex);
                         const isCenter = dist === 0;
                         const status = getEventStatus(event);
@@ -1855,24 +2672,24 @@ export default function App() {
                             onClick={() => handleCarouselCardClick(i)}
                           >
                         <div className={cn(
-                              "rounded-3xl overflow-hidden bg-white",
-                              isCenter ? "shadow-[0_6px_28px_rgba(0,0,0,0.13)]" : "shadow-sm"
+                              "relative h-[20rem] rounded-3xl overflow-hidden",
+                              isCenter ? "shadow-[0_8px_32px_rgba(0,0,0,0.16)]" : "shadow-sm"
                             )}>
-                              {/* Image */}
-                              <div className="relative h-56 overflow-hidden">
                                 <img
                                   src={event.image}
                                   alt={event.title}
                                   className="w-full h-full object-cover"
                                 />
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
+                                <div className="absolute inset-0 bg-gradient-to-t from-black/82 via-black/26 to-transparent" />
                                 {/* Status badge */}
                                 <div className="absolute top-3 left-3 flex items-center gap-1.5">
                           <span className={cn(
                                     "px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest backdrop-blur-md",
-                                    status === 'ongoing' ? "bg-emerald-500/85 text-white" : "bg-indigo-500/85 text-white"
+                                    status === 'ongoing' && "bg-emerald-500/85 text-white",
+                                    status === 'future' && "bg-indigo-500/85 text-white",
+                                    status === 'ended' && "bg-fuchsia-500/85 text-white"
                                   )}>
-                                    {status === 'ongoing' ? '进行中' : '即将开始'}
+                                    {status === 'ongoing' ? '进行中' : status === 'future' ? '未来' : '已结束'}
                           </span>
                                   {event.hotTag && isCenter && (
                                     <span className="px-2 py-1 rounded-full text-[9px] font-bold bg-rose-500/85 text-white backdrop-blur-md">
@@ -1884,30 +2701,17 @@ export default function App() {
                                 {!isCenter && eventSceneFilter && sceneMatch && (
                                   <div className="absolute inset-0 ring-2 ring-inset ring-indigo-400/40 rounded-3xl" />
                                 )}
-                                {/* Countdown */}
-                                <div className="absolute bottom-3 left-4">
-                                  <span className={cn(
-                                    "text-[11px] font-bold drop-shadow-sm",
-                                    status === 'ongoing' ? "text-emerald-300" : "text-indigo-200"
-                                  )}>
-                                    {getEventCountdown(event)}
-                                  </span>
-                            </div>
                                 {isCenter && (
                                   <div className="absolute bottom-3 right-4 flex items-center gap-1 text-white/60">
                                     <span className="text-[10px] font-medium">查看详情</span>
                                     <ChevronRight size={10} />
                                   </div>
                             )}
-                          </div>
-                              {/* Card info — 只保留标题 + 地点，标签移除，减少密度 */}
-                              <div className="px-4 pt-3.5 pb-4 space-y-1.5">
-                                <h4 className="text-[14px] font-bold text-[#1A1A1A] leading-snug line-clamp-2">{event.title}</h4>
-                                <div className="flex items-center gap-1.5 text-[#1A1A1A]/35">
-                                  <MapPin size={10} />
-                                  <span className="text-[11px] truncate">{event.location.split(' ').slice(-1)[0]}</span>
+                                <div className="absolute inset-x-0 bottom-0 px-4 pb-10 pt-12">
+                                  <h4 className="text-[18px] sm:text-[20px] font-bold text-white leading-snug line-clamp-2 [text-shadow:0_2px_10px_rgba(0,0,0,0.45)]">
+                                    {event.title}
+                                  </h4>
                                 </div>
-                          </div>
                         </div>
                       </motion.div>
                     );
@@ -1917,7 +2721,7 @@ export default function App() {
 
                     {/* ── Dot indicators ── */}
                     <div className="flex justify-center gap-1.5 mt-1.5">
-                      {activeEvents.map((_, i) => (
+                      {carouselEvents.map((_, i) => (
                         <div
                           key={i}
                           className={cn(
@@ -1928,64 +2732,143 @@ export default function App() {
                       ))}
               </div>
 
-                    {/* ── AI Tips：insight + tips 合并成一张卡，减少盒子数量 ── */}
+                    {/* ── Bottom info sheet ── */}
               <AnimatePresence mode="wait">
                     <motion.div
                         key={`tips-${centerEventIndex}-${eventSceneFilter}`}
-                      initial={{ opacity: 0, y: 10 }}
+                      initial={{ opacity: 0, y: 14 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -10 }}
-                        transition={{ duration: 0.2 }}
-                        className="px-5 mt-5"
+                        transition={{ duration: 0.22 }}
+                        className="mt-5 min-h-[38vh] sm:min-h-[32vh] rounded-t-[2rem] bg-white px-5 pt-5 pb-8 shadow-[0_-10px_30px_rgba(17,24,39,0.04)]"
                     >
                         {centeredEvent && (() => {
                           const st = getEventStatus(centeredEvent);
                           const isSceneMode = !!(eventSceneFilter && sceneInsight);
-                          return (
-                      <div className={cn(
-                              "rounded-2xl p-4 space-y-3",
-                              isSceneMode ? "bg-[#1A1A1A]" : st === 'ongoing' ? "bg-emerald-50" : "bg-indigo-50"
-                            )}>
-                              {/* Insight 主句 */}
-                              <div className="flex items-start gap-2.5">
-                                <Sparkles size={13} className={cn(
-                                  "mt-0.5 flex-shrink-0",
-                                  isSceneMode ? "text-white/50" : st === 'ongoing' ? "text-emerald-500" : "text-indigo-500"
-                                )} />
-                        <div>
-                                  {isSceneMode && (
-                                    <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-white/40 mb-1">
-                                      {eventSceneFilter} · 专属建议
-                                    </p>
-                                  )}
-                                  <p className={cn(
-                                    "text-[12px] font-medium leading-relaxed",
-                                    isSceneMode ? "text-white/85" : "text-[#1A1A1A]/65"
-                                  )}>
-                                    {sceneInsight || centeredEvent.aiInsight}
-                                  </p>
-                        </div>
-                      </div>
+                          const primaryLine = isSceneMode
+                            ? `${eventSceneFilter}可优先看这场`
+                            : st === 'ongoing'
+                              ? '现在去正合适'
+                              : st === 'future'
+                                ? '可以提前安排'
+                                : '这场已经结束';
+                          const detailLine = sceneInsight || centeredEvent.aiInsight;
+                          const accentClass =
+                            st === 'ongoing'
+                              ? "bg-emerald-500"
+                              : st === 'future'
+                                ? "bg-indigo-500"
+                                : "bg-fuchsia-500";
+                          const accentTextClass =
+                            st === 'ongoing'
+                              ? "text-emerald-600"
+                              : st === 'future'
+                                ? "text-indigo-600"
+                                : "text-fuchsia-600";
 
-                              {/* Tips：分隔线 + 简洁列表，不再单独分盒子 */}
-                              {centeredEvent.aiTips.length > 0 && (
-                                <div className={cn(
-                                  "pt-3 border-t space-y-2",
-                                  isSceneMode ? "border-white/10" : "border-black/8"
+                          return (
+                            <div className="flex min-h-[30vh] sm:min-h-[24vh] flex-col justify-between space-y-5">
+                              <div className="flex items-center gap-2">
+                                <span className={cn("h-2 w-2 rounded-full", accentClass)} />
+                                <p className={cn("text-[11px] font-semibold tracking-[0.14em] uppercase", accentTextClass)}>
+                                  {st === 'ongoing' ? 'Now Showing' : st === 'future' ? 'Coming Up' : 'Archive'}
+                                </p>
+                              </div>
+
+                              <div className="space-y-3">
+                                <p className="text-[18px] sm:text-[20px] font-semibold leading-[1.5] text-[#1A1A1A]">
+                                  {primaryLine}
+                                </p>
+                                <p className="text-[13px] sm:text-[14px] leading-relaxed text-[#1A1A1A]/46">
+                                  {detailLine}
+                                </p>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2.5">
+                                <div className="rounded-[1.15rem] bg-black/[0.03] px-3.5 py-3">
+                                  <div className="flex items-center gap-2 text-[#1A1A1A]/32">
+                                    <Clock size={12} />
+                                    <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">时间</span>
+                                  </div>
+                                  <p className="mt-2 text-[12px] font-semibold leading-snug text-[#1A1A1A]/68 line-clamp-2">
+                                    {centeredEvent.time}
+                                  </p>
+                                </div>
+
+                                <div className="rounded-[1.15rem] bg-black/[0.03] px-3.5 py-3">
+                                  <div className="flex items-center gap-2 text-[#1A1A1A]/32">
+                                    <MapPin size={12} />
+                                    <span className="text-[10px] font-semibold uppercase tracking-[0.12em]">地点</span>
+                                  </div>
+                                  <p className="mt-2 text-[12px] font-semibold leading-snug text-[#1A1A1A]/68 line-clamp-2">
+                                    {centeredEvent.location}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap gap-2">
+                                <span className={cn(
+                                  "px-3 py-1.5 rounded-full text-[11px] font-semibold",
+                                  st === 'ongoing' && "bg-emerald-50 text-emerald-600",
+                                  st === 'future' && "bg-indigo-50 text-indigo-600",
+                                  st === 'ended' && "bg-fuchsia-50 text-fuchsia-600"
                                 )}>
-                                  {centeredEvent.aiTips.map((tip, ti) => (
-                                    <div key={ti} className="flex items-start gap-2">
-                                      <span className={cn(
-                                        "text-[10px] mt-0.5 flex-shrink-0",
-                                        isSceneMode ? "text-white/30" : "text-black/25"
-                                      )}>•</span>
-                                      <p className={cn(
-                                        "text-[11px] leading-relaxed",
-                                        isSceneMode ? "text-white/60" : "text-[#1A1A1A]/50"
-                                      )}>{tip}</p>
-                          </div>
-                        ))}
-                      </div>
+                                  {st === 'ended' ? '已结束' : getEventCountdown(centeredEvent)}
+                                </span>
+                                {centeredEvent.ticketInfo && (
+                                  <span className="px-3 py-1.5 rounded-full text-[11px] font-semibold bg-black/[0.03] text-[#1A1A1A]/55">
+                                    {centeredEvent.ticketInfo}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2.5 pt-1">
+                                <div className="rounded-[1.15rem] bg-black/[0.02] px-3.5 py-3 space-y-2">
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#1A1A1A]/30">
+                                    适合
+                                  </p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {centeredEvent.scenes.slice(0, 2).map((scene) => (
+                                      <span
+                                        key={scene}
+                                        className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-white text-[#1A1A1A]/58"
+                                      >
+                                        {scene}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-[1.15rem] bg-black/[0.02] px-3.5 py-3 space-y-2">
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#1A1A1A]/30">
+                                    亮点
+                                  </p>
+                                  <p className="text-[12px] font-medium leading-relaxed text-[#1A1A1A]/58">
+                                    {centeredEvent.tags.slice(0, 2).join(' · ')}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {centeredEvent.aiQuestions.length > 0 && (
+                                <div className="space-y-2 pt-1">
+                                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#1A1A1A]/30">
+                                    还想了解
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {centeredEvent.aiQuestions
+                                      .filter((question) => !question.includes('规划'))
+                                      .slice(0, 3)
+                                      .map((question) => (
+                                        <button
+                                          key={question}
+                                          onClick={() => { void openEventChatQuestion(centeredEvent, question); }}
+                                          className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-black/[0.03] text-[#1A1A1A]/58 active:scale-95 transition-all"
+                                        >
+                                          {question}
+                                        </button>
+                                      ))}
+                                  </div>
+                                </div>
                               )}
                             </div>
                           );
@@ -1993,72 +2876,6 @@ export default function App() {
                       </motion.div>
                     </AnimatePresence>
 
-                    {/* ── 即将登场 spotlight ── */}
-                    {upcomingSpotlight && (
-                      <motion.div
-                        initial={{ opacity: 0, y: 12 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.15 }}
-                        className="mx-5 mt-6"
-                      >
-                        <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-black/25 mb-2.5">即将登场</p>
-                            <button
-                          onClick={() => { setSelectedEvent(upcomingSpotlight); setEventScene(''); setEventItinerary(null); }}
-                          className="w-full text-left flex items-center gap-3 p-3 rounded-2xl bg-indigo-50 border border-indigo-100 active:bg-indigo-100 transition-colors"
-                        >
-                          <div className="relative w-12 h-12 rounded-xl overflow-hidden flex-shrink-0">
-                            <img src={upcomingSpotlight.image} alt={upcomingSpotlight.title} className="w-full h-full object-cover" />
-                            <div className="absolute inset-0 bg-indigo-900/20" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[13px] font-bold text-[#1A1A1A] line-clamp-1">{upcomingSpotlight.title}</p>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <Timer size={10} className="text-indigo-400" />
-                              <span className="text-[11px] font-semibold text-indigo-600">{getEventCountdown(upcomingSpotlight)}</span>
-                              {upcomingSpotlight.hotTag && (
-                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600">{upcomingSpotlight.hotTag}</span>
-                              )}
-                            </div>
-                          </div>
-                          <ChevronRight size={15} className="text-indigo-300 flex-shrink-0" />
-                        </button>
-                      </motion.div>
-                    )}
-
-                    {/* ── 往期精彩 ── */}
-                    {pastEvents.length > 0 && (
-                      <div className="mx-5 mt-6">
-                        <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-black/25 mb-2.5">往期精彩</p>
-                        <div className="space-y-2">
-                          {pastEvents.map(event => (
-                            <button
-                              key={event.id}
-                              onClick={() => { setSelectedEvent(event); setEventScene(''); setEventItinerary(null); }}
-                              className="w-full text-left flex items-center gap-3 px-3.5 py-3 bg-white rounded-xl border border-black/6 opacity-60 active:opacity-80 transition-opacity"
-                            >
-                              <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 grayscale">
-                                <img src={event.image} alt={event.title} className="w-full h-full object-cover" />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-[12px] font-semibold text-[#1A1A1A]/60 truncate">{event.title}</p>
-                                <p className="text-[10px] text-black/30 mt-0.5">{event.time}</p>
-                              </div>
-                              <div className="flex items-center gap-1 text-black/25 flex-shrink-0">
-                                <span className="text-[10px]">已结束</span>
-                                <ChevronRight size={12} />
-                              </div>
-                            </button>
-                          ))}
-                        <button
-                            onClick={() => { void openFreshChat('中洲湾最近还有哪些类似的手作或节日活动？'); }}
-                            className="w-full py-2.5 rounded-xl border border-dashed border-black/15 text-[11px] font-semibold text-[#1A1A1A]/35 flex items-center justify-center gap-1.5 active:bg-black/3 transition-all"
-                          >
-                            <Sparkles size={11} />
-                            问问 AI：之后还有类似活动吗？
-                        </button>
-                      </div>
-                      </div>
-                    )}
                   </>
                   );
                 })()}
@@ -2081,7 +2898,7 @@ export default function App() {
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-white via-transparent to-transparent" />
                       <button 
-                        onClick={() => { setSelectedEvent(null); setEventItinerary(null); setEventScene(''); }}
+                        onClick={() => { setSelectedEvent(null); }}
                         className="absolute top-6 right-6 w-10 h-10 bg-black/20 backdrop-blur-xl rounded-full flex items-center justify-center text-white"
                       >
                         <X size={20} />
@@ -2095,7 +2912,7 @@ export default function App() {
                               "px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest backdrop-blur-md",
                               st === 'future' && "bg-indigo-500/80 text-white",
                               st === 'ongoing' && "bg-emerald-500/80 text-white",
-                              st === 'ended' && "bg-black/30 text-white/70"
+                              st === 'ended' && "bg-fuchsia-500/80 text-white"
                             )}>
                               {st === 'future' ? getEventCountdown(selectedEvent) : st === 'ongoing' ? getEventCountdown(selectedEvent) : '已结束'}
                           </span>
@@ -2140,12 +2957,12 @@ export default function App() {
                         <div className={cn(
                           "rounded-2xl px-4 py-3 flex items-start gap-3",
                           getEventStatus(selectedEvent) === 'ongoing' ? "bg-emerald-50" :
-                          getEventStatus(selectedEvent) === 'future' ? "bg-indigo-50" : "bg-neutral-50"
+                          getEventStatus(selectedEvent) === 'future' ? "bg-indigo-50" : "bg-fuchsia-50"
                         )}>
                           <Sparkles size={14} className={cn(
                             "mt-0.5 flex-shrink-0",
                             getEventStatus(selectedEvent) === 'ongoing' ? "text-emerald-500" :
-                            getEventStatus(selectedEvent) === 'future' ? "text-indigo-500" : "text-neutral-400"
+                            getEventStatus(selectedEvent) === 'future' ? "text-indigo-500" : "text-fuchsia-500"
                           )} />
                           <p className="text-[12px] font-medium leading-relaxed text-[#1A1A1A]/70">{selectedEvent.aiInsight}</p>
                         </div>
@@ -2182,137 +2999,6 @@ export default function App() {
                         </div>
                       )}
 
-                        {/* ──── AI 行程规划 ──── */}
-                        {getEventStatus(selectedEvent) !== 'ended' && (
-                          <div className="space-y-3">
-                            <div className="flex items-center gap-2">
-                              <div className="w-6 h-6 rounded-lg bg-black flex items-center justify-center">
-                                <Navigation size={12} className="text-white" />
-                              </div>
-                              <h4 className="text-sm font-bold">帮我规划当天行程</h4>
-                            </div>
-
-                            {/* Scene chips */}
-                            <div className="space-y-2">
-                              <p className="text-[11px] text-black/40 font-medium">今天是什么场景？</p>
-                              <div className="flex flex-wrap gap-2">
-                                {selectedEvent.scenes.map(scene => (
-                        <button 
-                                    key={scene}
-                                    onClick={() => { setEventScene(scene); setEventItinerary(null); }}
-                          className={cn(
-                                      "text-[12px] font-semibold px-3.5 py-1.5 rounded-full transition-all active:scale-95",
-                                      eventScene === scene
-                                        ? "bg-[#1A1A1A] text-white"
-                                        : "bg-black/5 text-[#1A1A1A]/60 hover:bg-black/10"
-                                    )}
-                                  >
-                                    {scene}
-                        </button>
-                                ))}
-                      </div>
-                            </div>
-
-                            {/* Arrive time */}
-                            {eventScene && (
-                              <motion.div
-                                initial={{ opacity: 0, y: 6 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                className="space-y-2"
-                              >
-                                <p className="text-[11px] text-black/40 font-medium">预计几点到？</p>
-                                <div className="flex flex-wrap gap-2">
-                                  {['上午10点', '中午12点', '下午2点', '下午4点', '傍晚6点', '晚上8点'].map(t => (
-                                    <button
-                                      key={t}
-                                      onClick={() => setEventArriveTime(t)}
-                                      className={cn(
-                                        "text-[12px] font-semibold px-3 py-1.5 rounded-full transition-all active:scale-95",
-                                        eventArriveTime === t
-                                          ? "bg-indigo-600 text-white"
-                                          : "bg-black/5 text-[#1A1A1A]/60"
-                                      )}
-                                    >
-                                      {t}
-                                    </button>
-                                  ))}
-                    </div>
-                              </motion.div>
-                            )}
-
-                            {/* Generate button */}
-                            {eventScene && (
-                              <motion.button
-                                initial={{ opacity: 0, y: 6 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                onClick={handleGenerateItinerary}
-                                disabled={itineraryLoading}
-                                className="w-full py-3.5 rounded-2xl font-bold text-sm bg-[#1A1A1A] text-white flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-60"
-                              >
-                                {itineraryLoading ? (
-                                  <><Loader2 size={15} className="animate-spin" /> 生成中...</>
-                                ) : (
-                                  <><Zap size={15} /> 生成 {eventScene} 专属行程</>
-                                )}
-                              </motion.button>
-                            )}
-
-                            {/* Itinerary result */}
-                            <AnimatePresence>
-                              {eventItinerary && (
-                                <motion.div
-                                  initial={{ opacity: 0, y: 10 }}
-                                  animate={{ opacity: 1, y: 0 }}
-                                  exit={{ opacity: 0 }}
-                                  className="rounded-2xl bg-black/[0.03] border border-black/8 p-4 space-y-3"
-                                >
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <Sparkles size={13} className="text-indigo-500" />
-                                    <p className="text-[11px] font-bold text-indigo-600 uppercase tracking-[0.1em]">{eventScene} · 专属行程</p>
-                                  </div>
-                                  <div className="space-y-2">
-                                    {eventItinerary.steps.map((step, i) => (
-                                      <p key={i} className="text-[13px] font-medium text-[#1A1A1A]/75 leading-relaxed">{step}</p>
-                                    ))}
-                                  </div>
-                                  {eventItinerary.tip && (
-                                    <div className="pt-2 border-t border-black/8 flex items-start gap-2">
-                                      <Quote size={12} className="text-black/25 shrink-0 mt-0.5" />
-                                      <p className="text-[11px] text-black/45 italic leading-relaxed">{eventItinerary.tip}</p>
-                                    </div>
-                                  )}
-                                  {/* 跳转到美食推荐 */}
-                                  <button
-                                    onClick={() => { setSelectedEvent(null); setMode('dining'); }}
-                                    className="w-full mt-1 py-2.5 rounded-xl bg-white border border-black/10 text-[12px] font-semibold text-[#1A1A1A]/60 flex items-center justify-center gap-1.5 active:scale-95 transition-all"
-                                  >
-                                    <Utensils size={13} />
-                                    帮我找这顿饭去哪儿吃
-                                    <ChevronRight size={13} />
-                                  </button>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-                        )}
-
-                        {/* Quick questions → Chat */}
-                        {selectedEvent.aiQuestions.length > 0 && (
-                          <div className="space-y-2">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-black/25">还想了解</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {selectedEvent.aiQuestions.map(q => (
-                                <button
-                                  key={q}
-                                  onClick={() => { setSelectedEvent(null); void openFreshChat(q); }}
-                                  className="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-black/5 text-[#1A1A1A]/60 hover:bg-black/10 transition-all active:scale-95"
-                                >
-                                  {q}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
                       </div>
                     </div>
                   </motion.div>
