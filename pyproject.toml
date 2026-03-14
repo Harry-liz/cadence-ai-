@@ -1,0 +1,14 @@
+[project]
+name = "cadence-ai"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "httpx",
+  "python-dotenv",
+  "pydantic",
+  "python-multipart",
+  "sqlalchemy",
+  "psycopg[binary]",
+]

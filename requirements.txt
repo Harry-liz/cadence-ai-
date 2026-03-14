@@ -1,1 +1,8 @@
--r backend/requirements.txt
+fastapi
+uvicorn[standard]
+httpx
+python-dotenv
+pydantic
+python-multipart
+sqlalchemy
+psycopg[binary]
