@@ -1207,8 +1207,8 @@ export default function App() {
 
   if (showSplash) {
     return (
-      <div className="relative min-h-screen overflow-hidden bg-[#F7F5F1] text-[#1A1A1A]">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(167,148,223,0.18),transparent_24%),radial-gradient(circle_at_16%_18%,rgba(220,211,245,0.34),transparent_28%),radial-gradient(circle_at_82%_72%,rgba(231,220,255,0.32),transparent_24%),radial-gradient(circle_at_76%_18%,rgba(209,231,255,0.18),transparent_18%),radial-gradient(circle_at_18%_82%,rgba(255,232,208,0.18),transparent_20%),linear-gradient(180deg,#FCFBF8_0%,#F7F4F7_48%,#F4EFF9_100%)]" />
+      <div className="relative min-h-screen overflow-hidden bg-[#F6F5FB] text-[#1A1A1A]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(167,148,223,0.18),transparent_24%),radial-gradient(circle_at_16%_18%,rgba(220,211,245,0.34),transparent_28%),radial-gradient(circle_at_82%_72%,rgba(215,220,255,0.32),transparent_24%),radial-gradient(circle_at_76%_18%,rgba(209,231,255,0.18),transparent_18%),radial-gradient(circle_at_18%_82%,rgba(208,225,255,0.18),transparent_20%),linear-gradient(180deg,#FEFCFF_0%,#F7F4FB_48%,#F3EFF8_100%)]" />
         <motion.div
           aria-hidden="true"
           className="pointer-events-none absolute left-[12%] top-[18%] h-24 w-24 rounded-full bg-[#D9CFF2]/70 blur-3xl sm:h-32 sm:w-32"
@@ -1223,7 +1223,7 @@ export default function App() {
         />
         <motion.div
           aria-hidden="true"
-          className="pointer-events-none absolute bottom-[14%] right-[18%] h-20 w-20 rounded-full bg-[#F4E2E7]/70 blur-3xl sm:h-28 sm:w-28"
+          className="pointer-events-none absolute bottom-[14%] right-[18%] h-20 w-20 rounded-full bg-[#DCE4F7]/70 blur-3xl sm:h-28 sm:w-28"
           animate={{ y: [0, -12, 0], x: [0, 10, 0] }}
           transition={{ duration: 6.5, repeat: Infinity, ease: 'easeInOut' }}
         />
@@ -1287,7 +1287,7 @@ export default function App() {
 
               <div className="relative">
                 <motion.div
-                  className="relative h-[24rem] w-[24rem] overflow-hidden rounded-full border border-white/60 bg-[linear-gradient(145deg,#ead6fa_0%,#d7b3f2_38%,#c393e8_68%,#b883df_100%)] shadow-[0_28px_70px_rgba(184,131,223,0.26)] sm:h-[34rem] sm:w-[34rem]"
+                  className="relative h-[24rem] w-[24rem] overflow-hidden rounded-full border border-white/60 bg-[linear-gradient(145deg,#e2d6fa_0%,#c6b3f2_38%,#ac93e8_68%,#9f83df_100%)] shadow-[0_28px_70px_rgba(159,131,223,0.26)] sm:h-[34rem] sm:w-[34rem]"
                   animate={{ y: [0, -8, 0], scale: [1, 1.01, 1] }}
                   transition={{ duration: 4.8, repeat: Infinity, ease: 'easeInOut' }}
                 >
@@ -1313,7 +1313,7 @@ export default function App() {
                 </motion.div>
 
                 <motion.div
-                  className="absolute -right-2 top-10 flex h-20 w-20 items-center justify-center rounded-full bg-[linear-gradient(145deg,#FAF0FF,#E6CCFA)] text-2xl font-semibold text-[#734a9f] shadow-[0_18px_35px_rgba(184,131,223,0.22)] sm:-right-4 sm:top-14 sm:h-28 sm:w-28 sm:text-4xl"
+                  className="absolute -right-2 top-10 flex h-20 w-20 items-center justify-center rounded-full bg-[linear-gradient(145deg,#F4F0FF,#D8CCFA)] text-2xl font-semibold text-[#664a9f] shadow-[0_18px_35px_rgba(159,131,223,0.22)] sm:-right-4 sm:top-14 sm:h-28 sm:w-28 sm:text-4xl"
                   animate={{ rotate: [0, 12, 0, -8, 0], y: [0, -4, 0] }}
                   transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
                 >
@@ -1422,7 +1422,7 @@ export default function App() {
                     initial={{ opacity: 0, y: -6 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.02 }}
-                    className="mx-auto block bg-[linear-gradient(120deg,rgba(69,57,126,0.72),rgba(102,86,201,0.64),rgba(138,116,216,0.58))] bg-clip-text text-[10px] sm:text-[11px] font-semibold uppercase tracking-[0.28em] text-transparent"
+                    className="mx-auto block bg-[linear-gradient(120deg,rgba(57,61,126,0.72),rgba(86,92,201,0.64),rgba(116,133,216,0.58))] bg-clip-text text-[10px] sm:text-[11px] font-semibold uppercase tracking-[0.28em] text-transparent"
                   >
                     Your Mall Day, Curated.
                   </motion.p>
@@ -1433,7 +1433,7 @@ export default function App() {
                     transition={{ delay: 0.08 }}
                     className="relative text-[3.18rem] sm:text-[5.15rem] font-semibold tracking-[-0.032em] text-[#1A1A1A] leading-[0.95]"
                   >
-                    <span className="inline-block px-3 sm:px-5 font-serif bg-[linear-gradient(120deg,#312651_0%,#5B49A9_32%,#8A74D8_58%,#C3B3F4_92%)] bg-clip-text text-transparent drop-shadow-[0_18px_36px_rgba(102,86,201,0.14)]">
+                    <span className="inline-block px-3 sm:px-5 font-serif bg-[linear-gradient(120deg,#252046_0%,#4B4CA8_32%,#757CE0_58%,#B6C4FA_92%)] bg-clip-text text-transparent drop-shadow-[0_18px_36px_rgba(75,76,168,0.14)]">
                       Cadence
                     </span>
                   </motion.h2>
