@@ -343,6 +343,7 @@ export default function App() {
   const [fullChatHistory, setFullChatHistory] = useState<ChatMsg[]>([]);
   const [chatStreaming, setChatStreaming] = useState('');
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const [chatReturnTarget, setChatReturnTarget] = useState<Mode | null>(null);
   const [todaySummary, setTodaySummary] = useState<TodaySummary | null>(null);
   const [todayLoading, setTodayLoading] = useState(true);
   const [quickPlanLoadingId, setQuickPlanLoadingId] = useState<string | null>(null);
@@ -926,7 +927,8 @@ export default function App() {
     }
   };
 
-  const openFreshChat = async (msg: string) => {
+  const openFreshChat = async (msg: string, options?: { returnTarget?: Mode | null }) => {
+    setChatReturnTarget(options?.returnTarget ?? null);
     setMode('chat');
     await sendChatMessage(msg, { resetHistory: true });
   };
@@ -1012,6 +1014,7 @@ export default function App() {
     setChatStreaming('');
     setLoading(false);
     setFullChatHistory([hiddenContext, introMessage]);
+    setChatReturnTarget('plan');
     setMode('chat');
     setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
   };
@@ -1036,6 +1039,7 @@ export default function App() {
     const nextHistory = [hiddenContext, userMsg];
 
     setSelectedEvent(null);
+    setChatReturnTarget('events');
     setMode('chat');
     setFullChatHistory(nextHistory);
     setChatInput('');
@@ -1146,6 +1150,9 @@ export default function App() {
       stopCamera();
       setStyleCameraOpen(false);
     }
+    if (newMode !== 'chat') {
+      setChatReturnTarget(null);
+    }
     setMode(newMode);
     setResult(null);
     if (newMode === 'style') {
@@ -1188,16 +1195,15 @@ export default function App() {
   };
 
   const lastUserPrompt = fullChatHistory.filter(m => m.role === 'user').slice(-1)[0]?.text ?? '';
-  const homePrimaryPreset = quickPlanPresets[0];
   const smartBanner = getSmartBanner();
-  const homeStatusItems = todaySummary?.statuses.slice(0, 3) ?? [];
-  const homeChatSuggestions = [
-    todaySummary?.highlights[0]?.query ?? '今天有什么活动？',
-    '现在适合先吃饭还是先逛？',
-  ];
   const selectedPlanScene = planSceneOptions.find((item) => item.id === planPreferences.sceneId) ?? planSceneOptions[0];
   const eyeOffsetX = splashPointer.x * 4;
   const eyeOffsetY = splashPointer.y * 3;
+  const chatReturnLabel = chatReturnTarget === 'plan'
+    ? '返回路线'
+    : chatReturnTarget === 'events'
+      ? '返回活动'
+      : null;
 
   if (showSplash) {
     return (
@@ -1247,16 +1253,16 @@ export default function App() {
           <motion.button
             type="button"
             onClick={() => setShowSplash(false)}
-            initial={{ opacity: 0, x: -30, y: 24 }}
-            animate={{ opacity: 1, x: 0, y: [0, -10, 0] }}
+            initial={{ opacity: 0, x: -40, y: 40, rotate: 12 }}
+            animate={{ opacity: 1, x: 0, y: [0, -10, 0], rotate: 12 }}
             transition={{
               opacity: { duration: 0.55, delay: 0.15 },
               x: { duration: 0.55, delay: 0.15 },
               y: { duration: 4.8, repeat: Infinity, ease: 'easeInOut', delay: 0.35 },
             }}
-            whileHover={{ x: 10, y: -12, scale: 1.03, rotate: -2 }}
-            whileTap={{ scale: 0.98 }}
-            className="group relative -ml-6 mt-10 flex w-fit items-end bg-transparent text-left outline-none sm:-ml-10"
+            whileHover={{ x: 15, y: -15, scale: 1.04, rotate: 16 }}
+            whileTap={{ scale: 0.98, rotate: 10 }}
+            className="group relative -mb-48 -ml-32 mt-12 flex w-fit origin-center items-end bg-transparent text-left outline-none sm:-mb-64 sm:-ml-40"
             aria-label="进入 Cadence 首页"
           >
             <motion.div
@@ -1267,12 +1273,12 @@ export default function App() {
             />
 
             <motion.div
-              className="relative z-10 flex w-[22rem] max-w-[82vw] flex-col items-center sm:w-[28rem]"
+              className="relative z-10 flex w-[26rem] max-w-none flex-col items-center sm:w-[36rem]"
               animate={{ rotate: [0, -1.6, 0, 1.2, 0] }}
               transition={{ duration: 5.4, repeat: Infinity, ease: 'easeInOut' }}
             >
               <motion.div
-                className="mb-4 rounded-full border border-white/70 bg-white/78 px-4 py-2 text-sm font-medium text-[#5B4FA8] shadow-[0_18px_45px_rgba(126,106,255,0.18)] backdrop-blur-md sm:text-base"
+                className="mb-4 mr-12 rounded-full border border-white/70 bg-white/78 px-5 py-2.5 text-base font-medium text-[#5B4FA8] shadow-[0_18px_45px_rgba(126,106,255,0.18)] backdrop-blur-md sm:mb-6 sm:px-6 sm:py-3 sm:text-lg"
                 animate={{ y: [0, -6, 0], scale: [1, 1.03, 1] }}
                 transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
               >
@@ -1281,44 +1287,33 @@ export default function App() {
 
               <div className="relative">
                 <motion.div
-                  className="relative h-[9.75rem] w-[18rem] overflow-hidden rounded-t-[999px] border border-white/60 border-b-0 bg-[linear-gradient(145deg,#ead6fa_0%,#d7b3f2_38%,#c393e8_68%,#b883df_100%)] shadow-[0_28px_70px_rgba(184,131,223,0.26)] sm:h-[11.25rem] sm:w-[21rem]"
+                  className="relative h-[24rem] w-[24rem] overflow-hidden rounded-full border border-white/60 bg-[linear-gradient(145deg,#ead6fa_0%,#d7b3f2_38%,#c393e8_68%,#b883df_100%)] shadow-[0_28px_70px_rgba(184,131,223,0.26)] sm:h-[34rem] sm:w-[34rem]"
                   animate={{ y: [0, -8, 0], scale: [1, 1.01, 1] }}
                   transition={{ duration: 4.8, repeat: Infinity, ease: 'easeInOut' }}
                 >
-                  <div className="absolute inset-x-0 top-0 h-[52%] rounded-t-[999px] bg-[linear-gradient(180deg,rgba(255,255,255,0.28),rgba(255,255,255,0))]" />
-                  <div className="absolute left-[16%] top-[14%] h-[34%] w-[26%] rotate-[-18deg] rounded-full bg-white/24 blur-md" />
-                  <div className="absolute right-[14%] top-[24%] h-[12%] w-[8%] rounded-full bg-white/32 blur-[2px]" />
+                  <div className="absolute inset-x-0 top-0 h-[25%] rounded-t-full bg-[linear-gradient(180deg,rgba(255,255,255,0.28),rgba(255,255,255,0))]" />
+                  <div className="absolute left-[16%] top-[12%] h-[20%] w-[26%] rotate-[-18deg] rounded-full bg-white/24 blur-md" />
+                  <div className="absolute right-[14%] top-[18%] h-[10%] w-[8%] rounded-full bg-white/32 blur-[2px]" />
 
                   <motion.div
-                    className="absolute left-[24%] top-[43%] h-5 w-10 rounded-t-full border-[5px] border-b-0 border-[#3f245f] sm:h-6 sm:w-12 sm:border-[6px]"
+                    className="absolute left-[30%] top-[25%] h-7 w-12 rounded-t-full border-[6px] border-b-0 border-[#3f245f] sm:h-10 sm:w-16 sm:border-[8px]"
                     animate={{ x: eyeOffsetX, y: eyeOffsetY }}
                     transition={{ type: 'spring', stiffness: 220, damping: 22, mass: 0.35 }}
                   />
 
                   <motion.div
-                    className="absolute right-[24%] top-[43%] h-5 w-10 rounded-t-full border-[5px] border-b-0 border-[#3f245f] sm:h-6 sm:w-12 sm:border-[6px]"
+                    className="absolute right-[18%] top-[25%] h-7 w-12 rounded-t-full border-[6px] border-b-0 border-[#3f245f] sm:h-10 sm:w-16 sm:border-[8px]"
                     animate={{ x: eyeOffsetX, y: eyeOffsetY }}
                     transition={{ type: 'spring', stiffness: 220, damping: 22, mass: 0.35 }}
                   />
 
-                  <div className="absolute left-[18%] top-[68%] h-5 w-8 rounded-full bg-[#e7cff8]/40 blur-[1px]" />
-                  <div className="absolute right-[18%] top-[68%] h-5 w-8 rounded-full bg-[#e7cff8]/40 blur-[1px]" />
-                  <div className="absolute left-1/2 top-[65%] h-5 w-11 -translate-x-1/2 rounded-b-[999px] bg-[#2d1f5e]" />
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 200 24"
-                    preserveAspectRatio="none"
-                    className="absolute inset-x-0 bottom-[-1px] h-5 w-full"
-                  >
-                    <path
-                      d="M0 8C14 2 28 2 42 8C56 14 70 14 84 8C98 2 112 2 126 8C140 14 154 14 168 8C180 3 190 3 200 8V24H0Z"
-                      fill="#b883df"
-                    />
-                  </svg>
+                  <div className="absolute left-[24%] top-[38%] h-6 w-11 rounded-full bg-[#e7cff8]/40 blur-[2px] sm:h-8 sm:w-16" />
+                  <div className="absolute right-[12%] top-[38%] h-6 w-11 rounded-full bg-[#e7cff8]/40 blur-[2px] sm:h-8 sm:w-16" />
+                  <div className="absolute left-[56%] top-[43%] h-6 w-14 -translate-x-1/2 rounded-b-full border-[6px] border-t-0 border-[#3f245f] sm:h-8 sm:w-20 sm:border-[8px]" />
                 </motion.div>
 
                 <motion.div
-                  className="absolute -right-12 -top-6 flex h-16 w-16 items-center justify-center rounded-full bg-[linear-gradient(145deg,#FAF0FF,#E6CCFA)] text-lg font-semibold text-[#734a9f] shadow-[0_18px_35px_rgba(184,131,223,0.22)] sm:-right-14 sm:-top-8 sm:h-[4.5rem] sm:w-[4.5rem] sm:text-xl"
+                  className="absolute -right-2 top-10 flex h-20 w-20 items-center justify-center rounded-full bg-[linear-gradient(145deg,#FAF0FF,#E6CCFA)] text-2xl font-semibold text-[#734a9f] shadow-[0_18px_35px_rgba(184,131,223,0.22)] sm:-right-4 sm:top-14 sm:h-28 sm:w-28 sm:text-4xl"
                   animate={{ rotate: [0, 12, 0, -8, 0], y: [0, -4, 0] }}
                   transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
                 >
@@ -1328,8 +1323,8 @@ export default function App() {
             </motion.div>
 
             <motion.div
-              className="absolute bottom-8 left-[60%] rounded-full border border-white/70 bg-white/72 px-4 py-2 text-xs font-medium text-[#5A507E] shadow-[0_18px_45px_rgba(164,138,255,0.16)] backdrop-blur-md transition-all group-hover:bg-white/88 group-hover:text-[#433B63] sm:bottom-10 sm:px-5 sm:py-2.5 sm:text-sm"
-              animate={{ y: [0, -6, 0], scale: [1, 1.03, 1] }}
+              className="absolute bottom-56 left-[62%] rounded-full border border-white/70 bg-white/72 px-5 py-2.5 text-sm font-medium text-[#5A507E] shadow-[0_18px_45px_rgba(164,138,255,0.16)] backdrop-blur-md transition-all group-hover:bg-white/88 group-hover:text-[#433B63] sm:bottom-72 sm:left-[64%] sm:px-6 sm:py-3 sm:text-base"
+              animate={{ y: [0, -6, 0], scale: [1, 1.03, 1], rotate: -10 }}
               transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
             >
               点击进入
@@ -1341,17 +1336,34 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F7F5F1] text-[#1A1A1A] font-sans selection:bg-indigo-100 overflow-x-hidden">
+    <div
+      className={cn(
+        "min-h-screen text-[#1A1A1A] font-sans selection:bg-indigo-100 overflow-x-hidden",
+        mode === 'home'
+          ? "bg-[linear-gradient(180deg,#FEFCFF_0%,#F7F4FB_46%,#F3EFF8_100%)]"
+          : "bg-[#F7F5F1]"
+      )}
+    >
       {/* Background Orbs */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-12%] left-[-10%] w-[48%] h-[44%] bg-violet-200/35 blur-[150px] rounded-full" />
-        <div className="absolute top-[18%] right-[-12%] w-[42%] h-[36%] bg-sky-200/26 blur-[150px] rounded-full" />
-        <div className="absolute bottom-[-14%] left-[12%] w-[38%] h-[30%] bg-fuchsia-100/26 blur-[145px] rounded-full" />
-        <div className="absolute bottom-[-16%] right-[-10%] w-[42%] h-[34%] bg-amber-100/18 blur-[150px] rounded-full" />
+        <div className="absolute inset-0 opacity-[0.55] [background-image:linear-gradient(to_right,rgba(122,100,180,0.04)_1px,transparent_1px),linear-gradient(to_bottom,rgba(122,100,180,0.04)_1px,transparent_1px)] [background-size:28px_28px] sm:opacity-[0.32]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.9),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.4),transparent_56%)]" />
+        <div className="absolute top-[-12%] left-[-10%] h-[44%] w-[48%] rounded-full bg-violet-200/40 blur-[150px]" />
+        <div className="absolute right-[-12%] top-[14%] h-[38%] w-[44%] rounded-full bg-sky-200/24 blur-[165px]" />
+        <div className="absolute bottom-[-12%] left-[8%] h-[34%] w-[42%] rounded-full bg-fuchsia-100/30 blur-[150px]" />
+        <div className="absolute bottom-[-16%] right-[-10%] h-[34%] w-[42%] rounded-full bg-amber-100/20 blur-[150px]" />
+        <div className="absolute left-1/2 top-[20%] h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(142,116,234,0.16),rgba(142,116,234,0.05)_45%,transparent_72%)] blur-3xl" />
       </div>
 
       {/* Header */}
-      <header className="sticky top-0 z-50 bg-white/35 backdrop-blur-2xl border-b border-white/30 px-6 py-3 flex items-center justify-between">
+      <header
+        className={cn(
+          "sticky top-0 z-50 px-6 py-3 flex items-center justify-between backdrop-blur-2xl",
+          mode === 'home'
+            ? "bg-white/18 border-b border-white/20"
+            : "bg-white/35 border-b border-white/30"
+        )}
+      >
         <div className="flex items-center gap-4 cursor-pointer" onClick={() => handleModeChange('home')}>
           <div className="flex items-center gap-2.5 px-1 py-1.5">
             <img 
@@ -1359,22 +1371,39 @@ export default function App() {
               alt="C Future City Logo" 
               className="h-8 w-8 object-contain flex-shrink-0 opacity-95"
             />
-            <span className="text-sm font-bold tracking-tight text-[#1A1A1A] leading-none">C Future City</span>
+            <span className={cn(
+              "text-sm font-semibold tracking-tight leading-none",
+              mode === 'home' ? "text-[#2C2540]/82" : "text-[#1A1A1A]"
+            )}>
+              C Future City
+            </span>
           </div>
         </div>
         {mode !== 'home' && (
           <button 
-            onClick={() => handleModeChange('home')}
-            className="p-2.5 hover:bg-black/5 rounded-full transition-colors border border-transparent hover:border-black/5"
+            onClick={() => {
+              if (mode === 'chat' && chatReturnTarget) {
+                handleModeChange(chatReturnTarget);
+                return;
+              }
+              handleModeChange('home');
+            }}
+            className={cn(
+              "transition-colors border border-transparent hover:border-black/5",
+              mode === 'chat' && chatReturnLabel
+                ? "inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-semibold text-[#1A1A1A]/62 hover:bg-black/5"
+                : "p-2.5 hover:bg-black/5 rounded-full"
+            )}
           >
-            <ChevronLeft size={22} className="text-[#1A1A1A]" />
+            <ChevronLeft size={mode === 'chat' && chatReturnLabel ? 16 : 22} className="text-[#1A1A1A]" />
+            {mode === 'chat' && chatReturnLabel && <span>{chatReturnLabel}</span>}
           </button>
         )}
       </header>
 
       <main className={cn(
         "max-w-2xl mx-auto px-4 py-5 sm:p-6 relative z-10",
-        mode === 'home' ? "h-[calc(100dvh-60px)] flex flex-col overflow-hidden" : "",
+        mode === 'home' ? "h-[calc(100dvh-60px)] max-w-3xl flex flex-col overflow-hidden px-5 sm:px-6" : "",
         mode === 'home' || mode === 'dining' ? "" : "min-h-screen pb-8"
       )}>
         <AnimatePresence mode="wait">
@@ -1384,40 +1413,57 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="relative flex-1 flex items-center justify-center py-6 sm:py-10"
+              className="relative flex-1 flex items-center justify-center py-4 sm:py-10"
             >
-              <div className="w-full max-w-3xl space-y-8 sm:space-y-10 -translate-y-8 sm:-translate-y-[3.75rem]">
-                <div className="relative space-y-5 text-center -translate-y-6 sm:-translate-y-6">
+              <div className="pointer-events-none absolute inset-x-6 top-10 h-28 rounded-full bg-[radial-gradient(circle,rgba(121,94,206,0.14),rgba(255,255,255,0)_70%)] blur-3xl sm:inset-x-20" />
+              <div className="w-full max-w-3xl space-y-5 sm:space-y-8 -translate-y-10 sm:-translate-y-8">
+                <div className="relative space-y-3 text-center -translate-y-8 sm:-translate-y-10">
                   <motion.p
                     initial={{ opacity: 0, y: -6 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.02 }}
-                    className="text-[11px] sm:text-[12px] font-semibold uppercase tracking-[0.34em] text-[#6A5BB4]/55"
+                    className="mx-auto block bg-[linear-gradient(120deg,rgba(69,57,126,0.72),rgba(102,86,201,0.64),rgba(138,116,216,0.58))] bg-clip-text text-[10px] sm:text-[11px] font-semibold uppercase tracking-[0.28em] text-transparent"
                   >
-                    A Better Way to Mall
+                    Your Mall Day, Curated.
                   </motion.p>
-                  <div className="pointer-events-none absolute left-1/2 top-[52%] h-24 w-[14rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(132,110,229,0.24),rgba(132,110,229,0.08)_40%,rgba(255,255,255,0)_72%)] blur-2xl sm:h-32 sm:w-[22rem]" />
+                  <div className="pointer-events-none absolute left-1/2 top-[56%] h-28 w-[15rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(132,110,229,0.22),rgba(132,110,229,0.07)_42%,rgba(255,255,255,0)_72%)] blur-2xl sm:h-36 sm:w-[24rem]" />
                   <motion.h2
                     initial={{ opacity: 0, scale: 0.97 }}
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ delay: 0.08 }}
-                    className="relative text-[3.15rem] sm:text-[5.2rem] font-semibold tracking-[-0.02em] text-[#1A1A1A] leading-[1.02]"
+                    className="relative text-[3.18rem] sm:text-[5.15rem] font-semibold tracking-[-0.032em] text-[#1A1A1A] leading-[0.95]"
                   >
-                    <span className="inline-block px-3 sm:px-5 font-serif bg-gradient-to-r from-[#45397E] via-[#6656C9] to-[#A288E3] bg-clip-text text-transparent drop-shadow-[0_14px_34px_rgba(102,86,201,0.14)]">
+                    <span className="inline-block px-3 sm:px-5 font-serif bg-[linear-gradient(120deg,#312651_0%,#5B49A9_32%,#8A74D8_58%,#C3B3F4_92%)] bg-clip-text text-transparent drop-shadow-[0_18px_36px_rgba(102,86,201,0.14)]">
                       Cadence
                     </span>
                   </motion.h2>
+                  <motion.div
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                    className="mx-auto flex max-w-[18.75rem] items-center justify-center gap-2.5 sm:max-w-[27rem] sm:gap-3"
+                  >
+                    <span className="h-px flex-1 bg-gradient-to-r from-transparent to-[#D4CBE7]/90" />
+                    <span className="max-w-[14.5rem] text-center text-[11.5px] sm:max-w-[22rem] sm:text-[13px] font-medium leading-relaxed tracking-[0.02em] text-[#4B4560]/68 [font-family:'Noto_Serif_SC','Songti_SC','STSong',serif]">
+                    吃什么 · 逛哪里 · 找活动
+                    <br />
+                    Cadence 帮你想
+                    </span>
+                    <span className="h-px flex-1 bg-gradient-to-l from-transparent to-[#D4CBE7]/90" />
+                  </motion.div>
                 </div>
 
-                <div className="rounded-[2rem] sm:rounded-[2.4rem] border border-white/70 bg-white/44 backdrop-blur-[26px] shadow-[0_24px_70px_rgba(17,24,39,0.05)] px-4 py-5 sm:px-6 sm:py-7">
+                <div className="relative overflow-hidden rounded-[2rem] sm:rounded-[2.4rem] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.62),rgba(255,255,255,0.42))] backdrop-blur-[28px] shadow-[0_28px_90px_rgba(74,57,126,0.08)] px-4 py-5 sm:px-6 sm:py-7">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white to-transparent" />
+                  <div className="pointer-events-none absolute right-0 top-0 h-32 w-32 bg-[radial-gradient(circle,rgba(212,202,246,0.55),transparent_68%)] blur-2xl" />
                   <div className="space-y-5 sm:space-y-6">
                     {lastUserPrompt && (
                       <div className="flex justify-center">
                         <button
                           onClick={() => handleModeChange('chat')}
-                          className="inline-flex w-full max-w-md items-center justify-center gap-2.5 rounded-[1.1rem] border border-black/[0.05] bg-white/76 px-4 py-3 text-[13px] font-semibold text-[#1A1A1A]/58 shadow-[0_10px_22px_rgba(17,24,39,0.04)] transition-all active:scale-95"
+                          className="inline-flex min-h-[44px] w-full max-w-md items-center justify-center gap-2.5 rounded-[1.15rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.84),rgba(255,255,255,0.72))] px-4 py-3 text-[13px] font-semibold text-[#2F2943]/70 shadow-[0_14px_28px_rgba(66,52,111,0.06)] transition-all duration-200 hover:bg-white/90 active:scale-95"
                         >
-                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-50 text-indigo-500 flex-shrink-0">
+                          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600">
                             <Sparkles size={13} />
                           </span>
                           <span className="truncate max-w-[15rem] sm:max-w-[22rem]">继续上次对话 · {lastUserPrompt}</span>
@@ -1426,24 +1472,20 @@ export default function App() {
                     )}
 
                     <form onSubmit={handleHomeChatSubmit} className="relative group">
-                      <div className="absolute -inset-1.5 rounded-[2.15rem] bg-gradient-to-r from-violet-200/14 via-white/10 to-indigo-200/14 blur-lg opacity-60 transition duration-500 group-focus-within:opacity-100" />
-                      <div className="relative overflow-hidden rounded-[1.7rem] sm:rounded-[2rem] border border-white/95 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,255,255,0.90))] backdrop-blur-[24px] shadow-[0_18px_48px_rgba(17,24,39,0.06)]">
+                      <div className="absolute -inset-1.5 rounded-[2.15rem] bg-[linear-gradient(135deg,rgba(188,170,245,0.26),rgba(255,255,255,0.12),rgba(196,223,255,0.22))] blur-xl opacity-70 transition duration-500 group-focus-within:opacity-100" />
+                      <div className="relative overflow-hidden rounded-[1.7rem] sm:rounded-[2rem] border border-white/95 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(255,255,255,0.9))] backdrop-blur-[24px] shadow-[0_20px_48px_rgba(65,49,109,0.07)]">
                         <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/90 to-transparent" />
-                        <div className="px-5 pt-4 sm:px-6 sm:pt-5">
-                          <p className="text-[11px] sm:text-[12px] font-semibold tracking-[0.16em] uppercase text-[#6D63A8]/55">
-                            Ask Cadence
-                          </p>
-                        </div>
+                        <div className="pointer-events-none absolute right-0 top-0 h-24 w-24 bg-[radial-gradient(circle,rgba(204,194,245,0.46),transparent_72%)] blur-2xl" />
                         <input 
                           type="text"
                           placeholder="今天想怎么逛？"
                           value={chatInput}
                           onChange={(e) => setChatInput(e.target.value)}
-                          className="w-full bg-transparent rounded-[1.7rem] sm:rounded-[2rem] pt-2 pb-4 sm:pt-2.5 sm:pb-5 pl-5 sm:pl-6 pr-16 sm:pr-20 focus:outline-none font-medium text-[#1A1A1A] text-[16px] sm:text-[20px] placeholder:text-black/22 text-left"
+                          className="w-full bg-transparent rounded-[1.7rem] sm:rounded-[2rem] py-5 sm:py-6 pl-5 sm:pl-6 pr-16 sm:pr-20 focus:outline-none font-medium text-[#201C2F] text-[16px] sm:text-[20px] placeholder:text-[#2C244A]/24 text-left"
                         />
                         <button 
                           disabled={loading || !chatInput.trim()}
-                          className="absolute right-3 bottom-3 sm:right-3.5 sm:bottom-3.5 w-11 h-11 sm:w-12 sm:h-12 bg-[#1A1A1A] text-white rounded-[1rem] sm:rounded-[1.15rem] flex items-center justify-center disabled:opacity-20 transition-all shadow-[0_12px_24px_rgba(0,0,0,0.16)] active:scale-95"
+                          className="absolute bottom-3 right-3 flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-[1rem] bg-[linear-gradient(135deg,#4B3F84_0%,#7C66D9_55%,#A991E9_100%)] text-white shadow-[0_14px_30px_rgba(93,72,169,0.28)] transition-all duration-200 disabled:opacity-20 active:scale-95 sm:bottom-3.5 sm:right-3.5 sm:h-12 sm:w-12 sm:rounded-[1.15rem]"
                         >
                           {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
                         </button>
@@ -1453,10 +1495,10 @@ export default function App() {
                     <div className="flex flex-col items-center gap-3">
                       <button
                         onClick={() => setHomeActionsOpen((prev) => !prev)}
-                        className="inline-flex w-full max-w-md items-center justify-between rounded-[1.1rem] border border-black/[0.05] bg-white/74 px-4 py-3 text-[13px] font-semibold text-[#1A1A1A]/60 shadow-[0_10px_22px_rgba(17,24,39,0.04)] transition-all active:scale-95"
+                        className="inline-flex min-h-[44px] w-full max-w-md items-center justify-between rounded-[1.15rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.82),rgba(255,255,255,0.72))] px-4 py-3 text-[13px] font-semibold text-[#2F2943]/68 shadow-[0_14px_28px_rgba(66,52,111,0.06)] transition-all duration-200 hover:bg-white/90 active:scale-95"
                       >
                         <span className="flex items-center gap-2.5">
-                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-50 text-violet-500">
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-violet-600">
                             <Sparkles size={13} />
                           </span>
                           功能
@@ -1493,10 +1535,10 @@ export default function App() {
                                     setHomeActionsOpen(false);
                                     item.onClick();
                                   }}
-                                  className="inline-flex w-full items-center justify-between rounded-[1.1rem] border border-black/[0.05] bg-white/74 px-4 py-3 text-[13px] font-semibold text-[#1A1A1A]/58 shadow-[0_10px_22px_rgba(17,24,39,0.04)] transition-all active:scale-95"
+                                  className="inline-flex min-h-[44px] w-full items-center justify-between rounded-[1.15rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.82),rgba(255,255,255,0.7))] px-4 py-3 text-[13px] font-semibold text-[#2F2943]/64 shadow-[0_14px_28px_rgba(66,52,111,0.06)] transition-all duration-200 hover:bg-white/90 active:scale-95"
                                 >
                                   <span className="flex items-center gap-2.5">
-                                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black/[0.03] text-[#1A1A1A]/58">
+                                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#F3EEFF] text-[#5A4F89]">
                                       <Icon size={13} />
                                     </span>
                                     {item.label}
@@ -1520,7 +1562,7 @@ export default function App() {
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.12 }}
-                  className="text-center text-[11px] sm:text-[12px] uppercase tracking-[0.28em] font-semibold text-[#1A1A1A]/22"
+                  className="text-center text-[11px] sm:text-[12px] uppercase tracking-[0.28em] font-semibold text-[#2A233E]/28"
                 >
                   Personal Mall AI
                 </motion.p>
@@ -1711,7 +1753,6 @@ export default function App() {
                         {duration}h
                       </button>
                     ))}
-                    <span className="ml-auto text-[11px] font-medium text-[#1A1A1A]/35">约 ¥ {planPreferences.durationHours * 90 + Math.max(planPreferences.people - 1, 0) * 40}+</span>
                   </div>
                 </div>
 
@@ -1955,7 +1996,7 @@ export default function App() {
                     <button
                       key={suggestion}
                       onClick={async () => {
-                        await openFreshChat(suggestion);
+                        await openFreshChat(suggestion, { returnTarget: 'plan' });
                       }}
                       className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-white border border-black/8 text-[#1A1A1A]/55 shadow-sm active:scale-95 transition-all"
                     >
