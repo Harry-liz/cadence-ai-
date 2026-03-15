@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -147,7 +147,7 @@ async def chat_structured(req: StructuredChatRequest, db: Session = Depends(get_
         for h in req.history[-8:]
     ) or "（对话刚开始）"
 
-    now = datetime.now()
+    now = datetime.now(timezone(timedelta(hours=8)))
     hour = now.hour
     minute = now.minute
     if hour < 11:

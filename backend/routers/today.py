@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -24,7 +24,7 @@ class TodaySummaryResponse(BaseModel):
 
 @router.get("/summary", response_model=TodaySummaryResponse)
 async def get_today_summary():
-    now = datetime.now()
+    now = datetime.now(timezone(timedelta(hours=8)))
     hour = now.hour
     is_weekend = now.weekday() >= 5
 

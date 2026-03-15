@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -67,7 +67,7 @@ def _start_time_label(hour: int) -> str:
 
 
 def _build_steps(scene: str, duration_hours: int, content_preferences: list[str] | None = None):
-    now = datetime.now()
+    now = datetime.now(timezone(timedelta(hours=8)))
     start = now.replace(minute=0, second=0, microsecond=0)
     prefs = content_preferences or []
     wants_event = "活动" in prefs
@@ -255,7 +255,7 @@ def _scene_route_guidance(scene: str, people: int, duration_hours: int) -> str:
 
 
 async def _generate_plan_with_model(req: DayPlanRequest) -> DayPlanResponse:
-    now = datetime.now()
+    now = datetime.now(timezone(timedelta(hours=8)))
     arrival_time = req.arrival_time or f"{now.hour:02d}:{now.minute:02d}"
     people = max(1, req.people or 1)
     fallback = _build_fallback_plan(req.scene, req.duration_hours, req.content_preferences)
