@@ -375,10 +375,10 @@ const MALL_EVENTS: MallEvent[] = [
   {
     id: '4',
     title: '超级巨星·惊喜降临 — 亚洲顶流女星官方快闪',
-    time: '2026年3月2日 - 2026年3月20日',
+    time: '2026年3月2日 - 2026年3月31日',
     location: '中洲湾 C Future City L1层中庭',
     startDate: new Date('2026-03-02T00:00:00'),
-    endDate: new Date('2026-03-20T23:59:59'),
+    endDate: new Date('2026-03-31T23:59:59'),
     image: '/亚洲女星活动.png',
     details: [
       '亚洲顶流女星官方快闪「大陆首场」登陆中洲湾',
@@ -2155,7 +2155,7 @@ export default function App() {
                           initial={{ opacity: 0, scale: 0.95, y: 10, height: 0 }}
                           animate={{ opacity: 1, scale: 1, y: 0, height: 'auto' }}
                           exit={{ opacity: 0, scale: 0.95, y: 10, height: 0 }}
-                          className="order-1 flex justify-center w-full overflow-hidden"
+                          className="order-1 flex justify-center w-full"
                         >
                           <div className="relative flex items-center justify-between w-full max-w-[420px] sm:justify-center sm:gap-4 px-3 py-2 sm:p-2.5 my-1">
                             {[

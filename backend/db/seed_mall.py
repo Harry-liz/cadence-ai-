@@ -318,7 +318,7 @@ FEATURED_EVENTS = [
         "event_type": "pop_up",
         "description": "L1 中庭限时快闪活动，沉浸式还原专属格调美学空间，官方独家周边限量发售。",
         "start_time": "2026-03-02T00:00:00+08:00",
-        "end_time": "2026-03-20T23:59:59+08:00",
+        "end_time": "2026-03-31T23:59:59+08:00",
         "image_url": "/亚洲女星活动.png",
         "venue_name": "L1 中庭活动区",
         "metadata": {
