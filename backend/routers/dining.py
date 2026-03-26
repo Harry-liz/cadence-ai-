@@ -13,6 +13,7 @@ from services.tracking import (
     save_message,
     save_recommendation_result,
 )
+from services.user_context import build_user_context
 
 router = APIRouter(prefix="/api/dining", tags=["dining"])
 
@@ -63,8 +64,17 @@ async def recommend(req: DiningRequest, db: Session = Depends(get_db)):
         metadata={"budget": req.budget, "people": req.people, "taste": req.taste},
     )
     dining_context = build_dining_context(db)
+    user_context = build_user_context(
+        db,
+        user_id=tracking.user_id,
+        session_id=tracking.session_id,
+    )
+    user_context_block = user_context or "暂无可用用户历史。"
 
     prompt = f"""基于以下商场背景：{dining_context}
+
+用户历史上下文：
+{user_context_block}
 
 用户正在寻找用餐地点：
 - 人均预算：{req.budget} 元
@@ -77,6 +87,7 @@ async def recommend(req: DiningRequest, db: Session = Depends(get_db)):
 3. 设施匹配：若用户有特殊需求（如需要包厢、可带宠物等），只推荐 facilities 标签中包含该需求的餐厅；不得编造未在 facilities 中列出的设施
 4. 预算匹配：优先推荐人均预算与用户预算相近的餐厅
 5. reason 字段须说明为何该餐厅匹配用户的具体需求，不超过40字
+6. 可以参考“用户历史上下文”做轻量个性化，但如果和本轮明确需求冲突，优先本轮需求，不要把旧偏好当成硬约束
 
 返回一个合法的 JSON 对象，格式为 {{"results": [...]}}，数组每项包含：name, image（使用数据中的 image，无则用 picsum.photos 链接）, category, dishes（5-8个）, budget, reason, rating, deals（使用数据中的 deals，无则返回空数组）。
 
@@ -101,7 +112,7 @@ async def recommend(req: DiningRequest, db: Session = Depends(get_db)):
             role="assistant",
             content=json.dumps(response.model_dump(mode="json"), ensure_ascii=False),
             intent="dining_recommendation",
-            metadata={"source": "openrouter"},
+            metadata={"source": "openrouter", "used_user_context": bool(user_context)},
         )
         save_recommendation_result(
             db,

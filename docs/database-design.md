@@ -1,176 +1,96 @@
-# Cadence AI Database Design Roadmap
+# Cadence AI Database Baseline
 
-## Goals
+## 当前概览
 
-This project needs a database design that supports two different workloads at the same time:
+当前这版数据库 baseline 已经支持一条完整闭环：
 
-1. Serve end users in real time through Cadence.
-2. Generate structured, privacy-aware analytics for mall operators and downstream agents.
+1. frontend 携带 `user_id` 和 `session_id` 发起请求
+2. backend 提供 `chat`、`dining`、`plan` 三条主功能链路
+3. operational tables 记录消息、事件和结果快照
+4. rollup 派生出 summaries、preferences、profiles、memories
+5. Agent1 再读取这些整理后的用户上下文，做轻量个性化
 
-The design below separates those responsibilities into clear domains so the system can evolve from today's prompt-driven prototype into a production-ready application.
+## 当前分层
 
-## Design Principles
+### 在线 Baseline
 
-- Keep mall source data separate from normalized business data.
-- Keep raw conversations separate from extracted memory and profile data.
-- Keep online serving data separate from analytics outputs.
-- Use structured fields for exact filtering and vector search only for semantic recall.
-- Prefer PostgreSQL as the first system of record, with JSONB for flexible source payloads.
+当前已经在实际使用：
 
-## Domain Model
+- 商场业务数据：`malls`、`floors`、`venues`、`offers`、`events`
+- 身份与会话：`users`、`sessions`
+- 运行历史：`messages`、`interaction_events`、`recommendation_results`、`plan_results`、`feedback`
 
-### 1. Mall Master Data
+### 用户记忆闭环
 
-This domain stores the canonical mall entities that Cadence can reason over.
+这些表由 rollup 写入，并已回流给 Agent1 使用：
 
-- `malls`: mall-level metadata.
-- `floors`: floor definitions within a mall.
-- `venues`: stores, restaurants, cinemas, service points, and event spaces.
-- `venue_tags`: ambiance, facilities, cuisine, audience, and similar labels.
-- `offers`:套餐、优惠、票价等时效性商品信息。
-- `events`: mall-level and venue-level activities.
-- `media_assets`: images and display assets attached to venues or events.
+- `session_summaries`
+- `user_profiles`
+- `user_preferences`
+- `agent_memories`
 
-This is the source that should eventually replace hardcoded prompt context in `backend/data/mall.py`.
+当前规则：
 
-### 2. User Interaction Data
+- `chat`、`dining`、`plan` 都可以参考这部分历史
+- 如果历史信息和用户当前明确需求冲突，以当前需求为准
 
-This domain captures what the user asked for, what Cadence returned, and what the user did next.
+### Analytics 扩展层
 
-- `users`: logical user identity for the product.
-- `sessions`: one visit or conversation context.
-- `messages`: raw user/assistant/tool messages.
-- `interaction_events`: clicks, route selections, venue views, feedback triggers.
-- `recommendation_results`: a snapshot of one recommendation output.
-- `plan_results`: a snapshot of one generated route or itinerary.
-- `feedback`: structured user sentiment on outputs or venues.
+这层有价值，但不是当前阶段的重点：
 
-This layer is the operational history used to improve recommendation quality and analyze adoption.
+- `venue_performance_daily`
+- `venue_engagement_daily`
+- `mall_demand_daily`
+- `fact_recommendation`
+- `fact_interest_signal`
 
-### 3. Agent Memory Data
+## 核心设计规则
 
-This domain stores what the system has learned about a user over time.
+- 商场业务数据和用户交互历史分开存放。
+- 原始历史和摘要化记忆分开存放。
+- 在线 serving 表和 analytics 表分开存放。
+- 精确约束优先使用结构化 SQL 字段。
+- 向量检索只用于 memories、knowledge chunks 这类语义文本。
 
-- `user_profiles`: stable, structured long-term preferences.
-- `user_preferences`: fine-grained extracted preferences with confidence and provenance.
-- `agent_memories`: natural-language memories, constraints, and summaries.
-- `memory_embeddings`: vector references for semantic recall.
+## 可选下一步
 
-Only a subset of interaction data should become memory. Raw chat logs are not memory by default.
+如果后面还要继续深化数据库能力，优先方向可以是：
 
-### 4. Source Ingestion Data
+- 更深入的 analytics rollups
+- 更稳定的 memory extraction 质量
+- 更统一的 user-context route contract
 
-Mall data may come from feeds, spreadsheets, APIs, or operations uploads. This domain keeps that ingestion process auditable.
+## Session 生命周期策略
 
-- `data_sources`: source system registry.
-- `raw_source_records`: raw payload archive.
-- `sync_jobs`: sync job metadata and failure tracking.
-
-This keeps external format changes from leaking into serving tables.
-
-### 5. Analytics Data
-
-This domain exists for mall-side reporting and for downstream agent analysis. It should be privacy-aware and mostly aggregated.
-
-- `anon_users`: anonymized analysis identity.
-- `user_segments`: segment definitions for reporting.
-- `session_summaries`: one summarized and de-identified session record.
-- `venue_performance_daily`: daily venue exposure and engagement metrics.
-- `mall_demand_daily`: daily demand distribution by intent, scene, and budget segment.
-- `fact_recommendation`: recommendation exposure and adoption facts.
-- `fact_interest_signal`: extracted user interest signals over time.
-
-Downstream analysis agents should query this layer, not raw chat tables.
-
-## What Should Be Vectorized
-
-Vectorization is useful only for semantic retrieval.
-
-Good candidates:
-
-- `agent_memories.content`
-- session summaries or conversation summaries
-- venue descriptions
-- event descriptions
-- knowledge-base content such as FAQ or operations notes
-
-Not good candidates:
-
-- IDs, floor codes, timestamps, ratings, prices
-- exact facilities like `有宝宝椅`
-- aggregated analytics metrics
-
-Recommended strategy:
-
-1. Use SQL filters for exact constraints like mall, floor, budget, open status, facility.
-2. Use vector search to recall relevant memories or knowledge text.
-3. Assemble the final context for the model from both sources.
-
-## Delivery Roadmap
-
-### Phase 1: Establish the System of Record
-
-Goal: replace hardcoded business data with normalized storage.
-
-Deliverables:
-
-- create the core mall master data tables
-- create interaction tables for sessions, messages, events, and results
-- create a first-pass memory model
-- load current mall data from code into the database
-
-Exit criteria:
-
-- `venues`, `offers`, and `events` can answer the current dining and planning flows
-- `sessions` and `messages` are written for every user request
-
-### Phase 2: Start Writing Interaction and Memory Data
-
-Goal: make Cadence stateful and analyzable.
-
-Deliverables:
-
-- persist chat sessions and user messages
-- persist recommendation and planning outputs
-- extract user preferences into `user_preferences`
-- generate memory summaries into `agent_memories`
-
-Exit criteria:
-
-- the product can recall a user's known preferences
-- recommendation outputs can be replayed and audited
-
-## Session Lifecycle Strategy
-
-`users` and `sessions` serve different purposes:
+`users` 和 `sessions` 的职责不同：
 
 - `user_id`: long-lived user identity
 - `session_id`: one continuous visit or conversation window
 
-Recommended rule set for Cadence:
+Cadence 当前建议遵循这套规则：
 
 1. Reuse the current `session_id` when the user is still actively chatting.
 2. Create a new `session_id` when the client explicitly starts a new conversation.
 3. Create a new `session_id` when the previous session has been idle for more than 30 minutes.
 
-Implementation notes:
+实现说明：
 
 - store `last_activity_at` on `sessions`
 - update `last_activity_at` whenever a new message is written
 - if a stale session is reused by the client, mark the old row as `expired` and create a new session row
 
-This gives the system useful session boundaries for:
+这样可以给系统提供有意义的 session 边界，用于：
 
 - short-term conversational context
 - session summaries
 - mall-side analytics
 - future agent memory extraction
 
-## Interaction Event Strategy
+## Interaction Event 策略
 
-Raw messages alone are not enough for mall-side analysis. The product should also write structured interaction events into `interaction_events`.
+仅靠 raw messages 不足以支持商场侧分析，产品还需要把结构化交互事件写入 `interaction_events`。
 
-Recommended first event set:
+建议的第一批 event：
 
 - `view_venue`: user opened a store, restaurant, or event detail
 - `click_recommendation`: user clicked one item from a recommendation list
@@ -179,7 +99,21 @@ Recommended first event set:
 - `expand_offer`: user opened an offer or package detail
 - `submit_feedback`: user gave explicit feedback
 
-Suggested payload shape:
+当前 V1 已实现重点：
+
+- `view_venue`: open an event detail card
+- `filter_events`: apply an event scene filter
+- `request_dining_recommendation`: submit the dining recommendation form
+- `view_venue`: record one restaurant card dwell time inside dining recommendations
+- `select_plan`: open the plan builder or choose a quick-plan preset
+- `generate_plan`: successfully receive a day plan result
+- `edit_plan_step`: successfully update one step in a generated plan
+- `open_plan_followup_chat`: continue asking AI from an existing plan result
+- `ask_event_question`: open chat from an event detail question
+- `click_chat_suggestion`: click an AI suggestion chip from chat or plan
+- `click_ai_action`: click an AI CTA such as dining or events
+
+建议的 payload 结构：
 
 - `event_type`
 - `target_type`
@@ -187,30 +121,30 @@ Suggested payload shape:
 - `payload`
 - `created_at`
 
-Design rule:
+设计规则：
 
-- keep `messages` for conversation history
-- keep `interaction_events` for structured actions
-- build analytics facts from `interaction_events` first, and only fall back to message parsing when needed
+- `messages` 用来保存对话历史
+- `interaction_events` 用来保存结构化动作
+- analytics facts 优先从 `interaction_events` 构建，只有必要时才回退到 message parsing
 
-This reduces ambiguity when Agent2 answers business questions such as:
+这样可以降低 Agent2 回答以下业务问题时的歧义：
 
-- which venues are getting exposure but low clicks
-- which recommendations are being opened or ignored
-- which user journeys end in route generation or feedback
+- 哪些 venues 有曝光但点击低
+- 哪些 recommendations 被打开了，哪些被忽略了
+- 哪些用户路径最终走到了 route generation 或 feedback
 
-Suggested ingestion path:
+建议的写入路径：
 
-- frontend calls `POST /api/interactions/event`
-- backend resolves `user_id` and `session_id`
-- backend writes one row into `interaction_events`
-- daily jobs aggregate these rows into analytics facts
+- frontend 调用 `POST /api/interactions/event`
+- backend 解析 `user_id` 和 `session_id`
+- backend 向 `interaction_events` 写入一行
+- daily jobs 再把这些数据聚合成 analytics facts
 
-## Feedback Strategy
+## Feedback 策略
 
-Feedback should be treated as a first-class signal, not just another event payload.
+`feedback` 应该被视为一等信号，而不只是另一个 event payload。
 
-Recommended feedback targets:
+建议的 feedback target：
 
 - recommendation result
 - venue
@@ -218,25 +152,25 @@ Recommended feedback targets:
 - plan
 - overall session
 
-Write path:
+写入路径：
 
 1. frontend submits feedback to `POST /api/feedback`
 2. backend writes one row to `feedback`
 3. backend also writes one `submit_feedback` event into `interaction_events`
 
-Why keep both:
+为什么要同时保留两者：
 
-- `feedback` is the clean fact table for explicit sentiment
-- `interaction_events` keeps the chronological event stream complete
+- `feedback` 是显式情绪反馈的干净 fact table
+- `interaction_events` 保留完整的时间序 event stream
 
-Suggested feedback semantics:
+建议的 feedback 语义：
 
 - `rating = 1-2`: negative signal
 - `rating = 3`: neutral or weakly useful
 - `rating = 4-5`: positive signal
 - `comment`: optional natural-language explanation
 
-Recommended target mapping:
+建议的 target mapping：
 
 - `target_type = venue`
 - `target_type = recommendation`
@@ -244,15 +178,15 @@ Recommended target mapping:
 - `target_type = event`
 - `target_type = session`
 
-This supports later analytics such as:
+这可以支持后续这类 analytics：
 
-- which recommendations are shown often but rated poorly
-- which venues convert to positive feedback
-- which itinerary styles get better session outcomes
+- 哪些 recommendations 经常展示但评分很差
+- 哪些 venues 更容易转化成正向 feedback
+- 哪类 itinerary style 更容易带来更好的 session outcome
 
-## Analytics Aggregation Plan
+## Analytics 聚合方案
 
-The analytics layer should be generated from operational tables on a schedule, instead of being written directly by product routes.
+analytics layer 应该定时从 operational tables 派生出来，而不是直接由产品 route 写入。
 
 ### Source tables
 
@@ -263,7 +197,7 @@ The analytics layer should be generated from operational tables on a schedule, i
 - `plan_results`
 - `feedback`
 
-### First aggregation jobs
+### 第一批 aggregation jobs
 
 1. `session_summary_job`
 2. `venue_performance_job`
@@ -273,18 +207,18 @@ The analytics layer should be generated from operational tables on a schedule, i
 
 ### 1. Session Summary Job
 
-Input:
+输入：
 
 - one finished or idle `session`
 - its `messages`
 - its `interaction_events`
 - its `feedback`
 
-Output:
+输出：
 
 - one row in `session_summaries`
 
-Derived fields:
+派生字段：
 
 - `primary_intent`
 - `scene_tag`
@@ -297,16 +231,17 @@ Derived fields:
 
 ### 2. Venue Performance Job
 
-Input:
+输入：
 
 - `interaction_events`
 - `feedback`
 
-Output:
+输出：
 
 - daily rows in `venue_performance_daily`
+- daily rows in `venue_engagement_daily`
 
-Suggested metrics:
+建议指标：
 
 - `exposure_count`: count of `view_venue`
 - `click_count`: count of clicks on venue-related results
@@ -314,47 +249,51 @@ Suggested metrics:
 - `route_add_count`: count of plans or selections involving the venue
 - `positive_feedback_count`
 - `negative_feedback_count`
+- `view_count`: dwell-qualified `view_venue` rows for recommendation cards
+- `meaningful_view_count`: count of views with stronger engagement
+- `quick_skip_count`: count of near-immediate skips
+- `avg_dwell_ms` / `median_dwell_ms` / `max_dwell_ms`
 
 ### 3. Mall Demand Job
 
-Input:
+输入：
 
 - `messages`
 - `session_summaries`
 - extracted tags or intent classifiers
 
-Output:
+输出：
 
 - daily rows in `mall_demand_daily`
 
-Typical dimensions:
+常见维度：
 
 - `intent`
 - `scene`
 - `budget_segment`
 
-This becomes the base for Agent2 prompts like "today's top user demand themes".
+这会成为 Agent2 处理类似 "today's top user demand themes" 这类问题时的基础数据层。
 
 ### 4. Recommendation Fact Job
 
-Input:
+输入：
 
 - `recommendation_results`
 - `interaction_events`
 - `feedback`
 
-Output:
+输出：
 
 - `fact_recommendation`
 
-This table should answer:
+这张表应该回答的问题包括：
 
 - was the recommendation shown
 - was it clicked
 - was it selected
 - did it receive feedback
 
-Current implementation direction:
+当前实现方向：
 
 - rebuild recommendation facts from `recommendation_results`
 - match recommended items back to `venues` by name or `venue_id`
@@ -363,34 +302,34 @@ Current implementation direction:
 
 ### 5. Interest Signal Job
 
-Input:
+输入：
 
 - `messages`
 - `session_summaries`
 - optional extraction model output
 
-Output:
+输出：
 
 - `fact_interest_signal`
 
-Examples:
+示例：
 
 - `signal_type = scene`, `signal_value = 两个人约会`
 - `signal_type = taste`, `signal_value = 想吃辣`
 - `signal_type = ambiance`, `signal_value = 安静`
 - `signal_type = budget`, `signal_value = 100-150`
 
-Current implementation direction:
+当前实现方向：
 
-- emit first-pass scene and budget signals from `session_summaries`
-- emit explicit preference signals from user messages using rule-based extraction
-- keep this as a baseline until a dedicated extraction model is introduced
+- 先从 `session_summaries` 产出第一版 scene 和 budget signals
+- 用 rule-based extraction 从用户消息中提取显式 preference signals
+- 在 dedicated extraction model 引入前，先把这版作为 baseline
 
-## Agent2 Consumption Layer
+## Agent2 消费层
 
-Agent2 should not read raw conversations by default. It should read analytics views and summary tables first.
+默认情况下，Agent2 不应该直接读取 raw conversations，而应该优先读取 analytics views 和 summary tables。
 
-Recommended read order:
+建议读取顺序：
 
 1. `vw_mall_daily_summary`
 2. `vw_top_venues_by_day`
@@ -398,193 +337,194 @@ Recommended read order:
 4. `vw_feedback_summary`
 5. `vw_top_interest_signals`
 
-If Agent2 needs examples, provide session summaries rather than full raw chats.
+如果 Agent2 需要示例，优先提供 `session_summaries`，而不是完整 raw chats。
 
-Design rule:
+设计规则：
 
-- default access: views and fact tables
-- restricted access: raw `messages`
-- privileged/manual access only: user-identifiable details
+- 默认访问：views 和 fact tables
+- 限制访问：raw `messages`
+- 仅人工审批后访问：可识别用户身份的细节
 
-## Memory Generation Strategy
+## Memory 生成策略
 
-`agent_memories` should not be a full copy of chat history. It should store only compact, reusable knowledge that helps future assistance.
+`agent_memories` 不应该是 chat history 的完整副本，而应该只保存紧凑、可复用、能帮助未来服务的知识。
 
 ### Memory source priority
 
-Preferred sources, from strongest to weakest:
+推荐的来源优先级，从强到弱：
 
-1. explicit user preferences
-2. repeated user constraints across sessions
-3. clear session outcomes
-4. high-signal feedback
-5. summarized behavior patterns
+1. 显式的用户偏好
+2. 跨 session 重复出现的用户约束
+3. 明确的 session outcome
+4. 高信号 feedback
+5. 摘要化的行为模式
 
-Avoid generating memory from:
+避免从以下内容直接生成 memory：
 
-- one-off casual comments
-- low-confidence model guesses
-- transient operational details that expire quickly
-- raw mall facts that already live in master data tables
+- 一次性的随口评论
+- 低置信度的模型猜测
+- 很快过期的临时运营细节
+- 已经存在于 master data tables 中的 raw mall facts
 
-### Recommended memory types
+### 建议的 memory type
 
-- `preference`: stable likes or dislikes
-- `constraint`: mobility, family, budget, dietary, timing constraints
-- `fact`: durable user facts that matter for planning
-- `summary`: one useful summary of a completed session
+- `preference`: 相对稳定的喜欢或不喜欢
+- `constraint`: 行动能力、家庭、预算、饮食、时间等约束
+- `fact`: 对规划有用的长期用户事实
+- `summary`: 一次已完成 session 的有效摘要
 
-Examples:
+示例：
 
 - `preference`: 用户偏好安静、适合聊天的餐厅
 - `constraint`: 用户带老人时希望少换楼层
 - `fact`: 用户常在工作日傍晚来商场
 - `summary`: 上次最终接受了咖啡+晚餐路线组合
 
-### Memory write timing
+### Memory 写入时机
 
-Do not write memory on every message. Preferred timing:
+不要每条消息都写 memory。更合适的时机是：
 
-1. session ends naturally
-2. session becomes idle and is summarized
-3. user gives explicit positive or negative feedback
-4. the same preference appears multiple times
+1. session 自然结束
+2. session 进入 idle 并被总结
+3. 用户给出明确的正向或负向 feedback
+4. 同一个 preference 多次出现
 
 ### Memory extraction pipeline
 
-Recommended pipeline:
+建议流程：
 
-1. read one completed or idle session
-2. summarize the session into `session_summaries`
-3. run extraction rules or an LLM pass
-4. write stable findings to `user_preferences`
-5. write compact natural-language memories to `agent_memories`
-6. optionally generate embeddings for high-value memories
+1. 读取一个已完成或 idle 的 session
+2. 把该 session 总结进 `session_summaries`
+3. 运行 extraction rules 或一次 LLM pass
+4. 把稳定结论写入 `user_preferences`
+5. 把紧凑的自然语言记忆写入 `agent_memories`
+6. 视情况为高价值 memory 生成 embeddings
 
-Current implementation direction:
+当前实现方向：
 
-- a rollup job scans sessions that are ended, expired, or idle for at least 30 minutes
-- it creates one `session_summaries` row per session
-- it promotes explicit rule-based signals into `user_preferences`
-- it writes compact first-pass memories into `agent_memories`
+- rollup job 会扫描 ended、expired，或 idle 至少 30 分钟的 sessions
+- 每个 session 生成一条 `session_summaries`
+- 把显式的 rule-based signals 提升到 `user_preferences`
+- 把紧凑的第一版 memories 写入 `agent_memories`
 
-This is a good first milestone because it makes the memory layer real before the product starts using it in prompt assembly.
+这是一个很好的第一阶段里程碑，因为它先让 memory layer 真正存在，再逐步接入 prompt assembly。
 
-### Memory promotion rules
+### Memory 提升规则
 
-Promote to `agent_memories` when at least one is true:
+满足以下任一条件时，可以提升到 `agent_memories`：
 
-- the user explicitly states a preference or constraint
-- the same signal appears in 2 or more sessions
-- the user gives strong feedback tied to a result
-- the signal materially changes future recommendations
+- 用户明确表达了 preference 或 constraint
+- 同一个 signal 出现在 2 个及以上的 sessions 中
+- 用户给出了与某个结果强相关的反馈
+- 这个 signal 会实质影响未来的 recommendations
 
-Otherwise, keep the information only in:
+否则，只保留在这些层：
 
 - `messages`
 - `session_summaries`
 - `fact_interest_signal`
 
-### Memory expiration and freshness
+### Memory 过期与新鲜度
 
-Not all memories should live forever.
+不是所有 memories 都应该永久保留。
 
-Recommended expiry policy:
+建议的过期策略：
 
-- stable preferences: no expiry by default
-- soft preferences: review after 90 days
-- short-term constraints: expiry after the relevant visit window
-- session summaries: short retention in recall layer, long retention in analytics layer
+- stable preferences: 默认不过期
+- soft preferences: 90 天后回看
+- short-term constraints: 在相关访问窗口结束后过期
+- session summaries: 在 recall layer 短保留，在 analytics layer 长保留
 
-Suggested operational rule:
+建议的运行规则：
 
-- rank memories by `importance`
-- recall the highest-value memories first
-- archive or ignore stale low-value memories during prompt assembly
+- 按 `importance` 给 memories 排序
+- 优先召回最高价值的 memories
+- 在 prompt assembly 过程中归档或忽略陈旧的低价值 memories
 
-### Memory quality rules
+### Memory 质量规则
 
-To keep memory useful:
+为了让 memory 保持有用：
 
-- one memory row should express one idea
-- use concrete language, not vague summaries
-- store provenance using `source_ref_type` and `source_ref_id`
-- avoid duplicating the same preference with different wording
-- prefer updating `user_preferences` for exact structured facts
+- 一条 memory row 只表达一个意思
+- 尽量使用具体语言，不写空泛总结
+- 用 `source_ref_type` 和 `source_ref_id` 保存 provenance
+- 避免用不同措辞重复写入同一个 preference
+- 对精确的结构化事实，优先更新 `user_preferences`
 
-## Agent2 Query Boundary And Permissions
+## Agent2 查询边界与权限
 
-Agent2 should operate on de-identified, business-ready data by default.
+默认情况下，Agent2 应该运行在去标识化、面向业务分析的数据层之上。
 
-### Default readable layer
+### 默认可读层
 
-Agent2 may read:
+Agent2 可以读取：
 
 - `session_summaries`
 - `venue_performance_daily`
+- `venue_engagement_daily`
 - `mall_demand_daily`
 - `fact_recommendation`
 - `fact_interest_signal`
-- analytics views such as `vw_mall_daily_summary`
-- safe example views derived from `session_summaries`
+- 例如 `vw_mall_daily_summary` 这类 analytics views
+- 从 `session_summaries` 派生出的 safe example views
 
-### Restricted layer
+### 限制层
 
-Agent2 should not read directly unless explicitly approved:
+除非明确批准，否则 Agent2 不应直接读取：
 
 - `messages`
 - `users`
-- raw `sessions` metadata with user linkage
-- `agent_memories` that contain identifiable personal detail
+- 带有 user linkage 的 raw `sessions` metadata
+- 含有可识别个人细节的 `agent_memories`
 - `raw_source_records`
 
-### Privileged layer
+### 高权限层
 
-Human-only or tightly controlled access:
+仅限人工或强控制访问：
 
 - personally identifiable user information
-- external source payloads with private fields
-- any table that can reconstruct a full named user journey
+- 含有私有字段的 external source payloads
+- 任何可以重建完整具名用户旅程的表
 
-### Recommended permission model
+### 建议的权限模型
 
-Use logical data products rather than broad table access:
+优先使用逻辑数据产品，而不是给很宽的表访问权限：
 
 1. operational app layer
 2. memory layer
 3. analytics safe layer
 4. privileged raw layer
 
-Agent2 should be wired only to layer 3 by default.
+默认情况下，Agent2 只应该接到 layer 3。
 
-### Agent2-safe example data
+### Agent2-safe 示例数据
 
-If Agent2 needs examples of user journeys, expose:
+如果 Agent2 需要用户旅程示例，可以暴露：
 
 - summarized session examples
 - top repeated complaints
 - top positive themes
 - top venue interaction patterns
 
-Do not expose:
+不要暴露：
 
 - full raw chat logs
 - exact user identifiers
 - cross-session raw message history
 
-### Escalation rule
+### 升级规则
 
-If Agent2 needs raw text for debugging or qualitative analysis:
+如果 Agent2 因为调试或定性分析确实需要 raw text：
 
-1. start from `session_summaries`
-2. escalate to a curated sample
-3. only then allow restricted raw access with human approval
+1. 先从 `session_summaries` 开始
+2. 再升级到 curated sample
+3. 只有在人工批准后才允许受限的 raw access
 
-This prevents the analytics agent from becoming a shadow customer support agent with unrestricted chat access.
+这样可以避免 analytics agent 变成一个拥有无限 chat 访问权限的“影子客服系统”。
 
-## Final Design State
+## 最终设计状态
 
-At this stage the database design is organized into:
+到这个阶段，数据库设计被组织成以下几层：
 
 - master data
 - interaction history
@@ -593,83 +533,84 @@ At this stage the database design is organized into:
 - analytics facts and views
 - Agent2-safe consumption boundaries
 
-This ordering is intentional:
+这个顺序是有意设计的：
 
-1. capture raw facts
-2. derive reusable memory
-3. aggregate safe analytics
-4. expose only the minimum layer needed for each downstream agent
+1. 先 capture raw facts
+2. 再 derive reusable memory
+3. 再 aggregate safe analytics
+4. 最后只向每个 downstream agent 暴露所需的最小层
 
 ### Phase 3: Add Semantic Recall
 
-Goal: improve continuity and knowledge retrieval.
+目标：提升连续性和知识召回能力。
 
-Deliverables:
+交付物：
 
 - enable `pgvector`
 - generate embeddings for memories and knowledge chunks
 - add retrieval flow before LLM prompting
 
-Exit criteria:
+完成标准：
 
 - the model can recall relevant prior preferences without reading full chat history
 
 ### Phase 4: Build the Analytics Layer
 
-Goal: support mall-facing analysis and downstream reporting agents.
+目标：支持面向商场侧的分析，以及下游 reporting agents。
 
-Deliverables:
+交付物：
 
 - anonymize or segment users for analytics
 - generate session summaries and daily aggregates
 - expose analytics views and reporting tables to Agent2
 
-Exit criteria:
+完成标准：
 
 - Agent2 no longer needs raw user chat data
 - mall-side analysis can run on summarized facts
 
-## Query Strategy by Use Case
+## 按使用场景划分的查询策略
 
-### Real-Time User Assistance
+### 实时用户服务
 
-Read from:
+读取来源：
 
 - `venues`, `offers`, `events`
 - `user_profiles`, `user_preferences`
 - `agent_memories` and semantic recall results
 - recent `sessions` and `messages`
 
-### Mall Operations Analysis
+### 商场运营分析
 
-Read from:
+读取来源：
 
 - `session_summaries`
 - `venue_performance_daily`
+- `venue_engagement_daily`
 - `mall_demand_daily`
 - `fact_recommendation`
 - `fact_interest_signal`
 
-### Data Quality and Sync Troubleshooting
+### 数据质量与同步排查
 
-Read from:
+读取来源：
 
 - `data_sources`
 - `raw_source_records`
 - `sync_jobs`
 
-## Recommended Initial Stack
+## 建议的初始技术栈
 
-- Primary database: PostgreSQL
-- Flexible fields: JSONB
-- Semantic retrieval: `pgvector`
-- API layer: FastAPI + SQLAlchemy or SQLModel
-- Background jobs: APScheduler, Celery, or a simple cron-driven task runner
+- 主数据库：PostgreSQL
+- 灵活字段：JSONB
+- 语义检索：`pgvector`
+- API 层：FastAPI + SQLAlchemy 或 SQLModel
+- 后台任务：APScheduler、Celery，或简单的 cron 驱动 task runner
 
-## Suggested Next Implementation Steps
+## 建议的下一步实现顺序
 
-1. Create the schema in `backend/db/schema.sql`.
-2. Add a `backend/db` module for engine, session, and model wiring.
-3. Start with write paths for `sessions`, `messages`, `recommendation_results`, and `plan_results`.
-4. Replace hardcoded mall data with a database seed process.
-5. Add one summarization job that converts a finished session into memory and analytics rows.
+1. 在 `backend/db/schema.sql` 中创建 schema。
+2. 增加 `backend/db` 模块，用来组织 engine、session 和 model wiring。
+3. 先打通 `sessions`、`messages`、`recommendation_results`、`plan_results` 的写入链路。
+4. 用 database seed process 替换 hardcoded mall data。
+5. 增加一个 summarization job，把完成的 session 转成 memory 和 analytics rows。

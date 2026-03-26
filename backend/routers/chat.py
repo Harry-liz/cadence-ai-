@@ -9,6 +9,7 @@ from data.mall import MALL_CONTEXT
 from db.session import get_db
 from services.openrouter import call_openrouter
 from services.tracking import ensure_tracking_context, safe_commit, save_message
+from services.user_context import build_user_context
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -94,11 +95,21 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
         session_id=req.session_id,
     )
     save_message(db, session_id=tracking.session_id, role="user", content=req.message, intent="chat")
+    user_context = build_user_context(
+        db,
+        user_id=tracking.user_id,
+        session_id=tracking.session_id,
+    )
+    user_context_block = user_context or "暂无可用用户历史。"
 
     prompt = f"""基于以下商场背景：{MALL_CONTEXT}
+
+用户历史上下文：
+{user_context_block}
+
 用户消息：{req.message}
 
-你是中洲湾 C Future City 的 Cadence AI 助手。请简洁且乐于助人地回答用户的问题。如果他们正在寻找特定的东西，请尝试将其与商场的店铺或餐厅联系起来。请使用中文回答。"""
+你是中洲湾 C Future City 的 Cadence AI 助手。请简洁且乐于助人地回答用户的问题。如果他们正在寻找特定的东西，请尝试将其与商场的店铺或餐厅联系起来。可以参考用户历史上下文做轻量个性化，但如果和本轮明确需求冲突，优先本轮需求。请使用中文回答。"""
 
     try:
         text = await call_openrouter([{"role": "user", "content": prompt}])
@@ -108,7 +119,7 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
             role="assistant",
             content=text,
             intent="chat",
-            metadata={"source": "openrouter"},
+            metadata={"source": "openrouter", "used_user_context": bool(user_context)},
         )
         safe_commit(db)
         return ChatResponse(text=text, user_id=tracking.user_id, session_id=tracking.session_id)
@@ -120,7 +131,7 @@ async def chat(req: ChatRequest, db: Session = Depends(get_db)):
             role="assistant",
             content=fallback.text,
             intent="chat",
-            metadata={"source": "fallback"},
+            metadata={"source": "fallback", "used_user_context": bool(user_context)},
         )
         safe_commit(db)
         return ChatResponse(text=fallback.text, user_id=tracking.user_id, session_id=tracking.session_id)
@@ -141,6 +152,12 @@ async def chat_structured(req: StructuredChatRequest, db: Session = Depends(get_
         intent="structured_chat",
         metadata={"history_length": len(req.history)},
     )
+    user_context = build_user_context(
+        db,
+        user_id=tracking.user_id,
+        session_id=tracking.session_id,
+    )
+    user_context_block = user_context or "暂无可用用户历史。"
 
     history_text = "\n".join(
         f"{'用户' if h.role == 'user' else 'Cadence'}：{h.text}"
@@ -166,6 +183,9 @@ async def chat_structured(req: StructuredChatRequest, db: Session = Depends(get_
 
 商场信息：{MALL_CONTEXT}
 
+用户历史上下文：
+{user_context_block}
+
 对话历史：
 {history_text}
 
@@ -190,6 +210,7 @@ async def chat_structured(req: StructuredChatRequest, db: Session = Depends(get_
 - 若内容与活动/展览相关，加 [ACTION:events:查看活动]
 - 若内容与停车相关，加 [ACTION:parking:打开停车助手]
 - 若适合展示图片，加 [IMG:food] 或 [IMG:coffee] 或 [IMG:event] 或 [IMG:fashion]
+- 可参考“用户历史上下文”做轻量个性化，但如果与当前用户刚说的话不一致，优先当前用户的话
 
 只返回纯文字，不要 markdown 格式。
 
@@ -241,6 +262,7 @@ async def chat_structured(req: StructuredChatRequest, db: Session = Depends(get_
                 "action": action,
                 "suggestions": suggestions,
                 "route": route,
+                "used_user_context": bool(user_context),
             },
         )
         safe_commit(db)
@@ -263,7 +285,11 @@ async def chat_structured(req: StructuredChatRequest, db: Session = Depends(get_
             role="assistant",
             content=fallback.text,
             intent="structured_chat",
-            metadata={"source": "fallback", "suggestions": fallback.suggestions},
+            metadata={
+                "source": "fallback",
+                "suggestions": fallback.suggestions,
+                "used_user_context": bool(user_context),
+            },
         )
         safe_commit(db)
         fallback.user_id = tracking.user_id

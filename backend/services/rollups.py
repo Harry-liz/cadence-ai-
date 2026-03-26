@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from statistics import median
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +21,9 @@ from db.models import (
     UserProfile,
     UserPreference,
     UserSession,
+    Venue,
+    VenueEngagementDaily,
+    VenuePerformanceDaily,
 )
 
 IDLE_SUMMARY_THRESHOLD = timedelta(minutes=30)
@@ -40,6 +44,10 @@ PREFERENCE_PATTERNS = {
     "facility": ["宝宝椅", "包厢", "停车", "可带宠物"],
     "taste": ["辣", "咖啡", "甜品", "下午茶", "火锅", "烤鱼"],
 }
+DINING_DWELL_SOURCE = "dining_recommendation"
+MIN_VALID_DWELL_MS = 800
+QUICK_SKIP_MAX_MS = 2000
+MEANINGFUL_VIEW_MIN_MS = 3000
 
 
 @dataclass
@@ -48,6 +56,14 @@ class SessionRollupResult:
     summary_created: bool
     memory_count: int
     preference_count: int
+
+
+@dataclass
+class VenueEngagementRollupResult:
+    metric_date: str
+    source: str
+    venue_name: str
+    view_count: int
 
 
 def _utcnow() -> datetime:
@@ -65,6 +81,41 @@ def _is_ready_for_rollup(session_obj: UserSession, now: datetime) -> bool:
 
 def _normalize_text(value: str | None) -> str:
     return (value or "").strip()
+
+
+def _extract_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_venue_by_name(
+    db: Session,
+    *,
+    mall_id,
+    venue_name: str,
+    venue_cache: dict[tuple[object, str], Venue | None],
+) -> Venue | None:
+    cache_key = (mall_id, venue_name)
+    if cache_key in venue_cache:
+        return venue_cache[cache_key]
+
+    venue = db.scalar(
+        select(Venue)
+        .where(Venue.mall_id == mall_id, Venue.name == venue_name)
+        .limit(1)
+    )
+    venue_cache[cache_key] = venue
+    return venue
 
 
 def _collect_messages(db: Session, session_id) -> list[Message]:
@@ -485,6 +536,129 @@ def roll_up_session(db: Session, session_obj: UserSession) -> SessionRollupResul
         memory_count=memory_count,
         preference_count=preference_count,
     )
+
+
+def roll_up_venue_engagement_daily(
+    db: Session,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[VenueEngagementRollupResult]:
+    event_rows = list(
+        db.scalars(
+            select(InteractionEvent)
+            .where(InteractionEvent.event_type == "view_venue")
+            .order_by(InteractionEvent.created_at.asc())
+        )
+    )
+
+    session_cache: dict[object, UserSession | None] = {}
+    venue_cache: dict[tuple[object, str], Venue | None] = {}
+    grouped_dwell: dict[tuple[date, object, str, str], list[int]] = defaultdict(list)
+    grouped_venue_ids: dict[tuple[date, object, str, str], object | None] = {}
+
+    for event in event_rows:
+        payload = event.payload or {}
+        source = _normalize_text(payload.get("source"))
+        if source != DINING_DWELL_SOURCE:
+            continue
+
+        dwell_ms = _extract_int(payload.get("dwell_ms"))
+        if dwell_ms is None or dwell_ms < MIN_VALID_DWELL_MS:
+            continue
+
+        venue_name = _normalize_text(payload.get("name"))
+        if not venue_name or not event.created_at:
+            continue
+
+        metric_date = event.created_at.date()
+        if start_date and metric_date < start_date:
+            continue
+        if end_date and metric_date > end_date:
+            continue
+
+        session_obj = session_cache.get(event.session_id)
+        if event.session_id not in session_cache:
+            session_obj = db.get(UserSession, event.session_id)
+            session_cache[event.session_id] = session_obj
+        if not session_obj or not session_obj.mall_id:
+            continue
+
+        venue = _resolve_venue_by_name(
+            db,
+            mall_id=session_obj.mall_id,
+            venue_name=venue_name,
+            venue_cache=venue_cache,
+        )
+
+        group_key = (metric_date, session_obj.mall_id, source, venue_name)
+        grouped_dwell[group_key].append(dwell_ms)
+        grouped_venue_ids[group_key] = venue.id if venue else None
+
+    results: list[VenueEngagementRollupResult] = []
+    for (metric_date, mall_id, source, venue_name), dwell_values in sorted(grouped_dwell.items()):
+        total_dwell_ms = sum(dwell_values)
+        view_count = len(dwell_values)
+        avg_dwell_ms = int(round(total_dwell_ms / view_count)) if view_count else None
+        median_dwell_ms = int(round(median(dwell_values))) if dwell_values else None
+        max_dwell_ms = max(dwell_values) if dwell_values else None
+        meaningful_view_count = sum(1 for value in dwell_values if value >= MEANINGFUL_VIEW_MIN_MS)
+        quick_skip_count = sum(1 for value in dwell_values if value <= QUICK_SKIP_MAX_MS)
+
+        row = db.scalar(
+            select(VenueEngagementDaily).where(
+                VenueEngagementDaily.metric_date == metric_date,
+                VenueEngagementDaily.mall_id == mall_id,
+                VenueEngagementDaily.source == source,
+                VenueEngagementDaily.venue_name == venue_name,
+            )
+        )
+        if not row:
+            row = VenueEngagementDaily(
+                metric_date=metric_date,
+                mall_id=mall_id,
+                source=source,
+                venue_name=venue_name,
+            )
+            db.add(row)
+
+        row.venue_id = grouped_venue_ids.get((metric_date, mall_id, source, venue_name))
+        row.view_count = view_count
+        row.meaningful_view_count = meaningful_view_count
+        row.quick_skip_count = quick_skip_count
+        row.total_dwell_ms = total_dwell_ms
+        row.avg_dwell_ms = avg_dwell_ms
+        row.median_dwell_ms = median_dwell_ms
+        row.max_dwell_ms = max_dwell_ms
+
+        if row.venue_id:
+            performance_row = db.scalar(
+                select(VenuePerformanceDaily).where(
+                    VenuePerformanceDaily.metric_date == metric_date,
+                    VenuePerformanceDaily.mall_id == mall_id,
+                    VenuePerformanceDaily.venue_id == row.venue_id,
+                )
+            )
+            if not performance_row:
+                performance_row = VenuePerformanceDaily(
+                    metric_date=metric_date,
+                    mall_id=mall_id,
+                    venue_id=row.venue_id,
+                )
+                db.add(performance_row)
+            performance_row.exposure_count = view_count
+
+        results.append(
+            VenueEngagementRollupResult(
+                metric_date=metric_date.isoformat(),
+                source=source,
+                venue_name=venue_name,
+                view_count=view_count,
+            )
+        )
+
+    db.commit()
+    return results
 
 
 def find_rollup_candidates(db: Session, limit: int = 50) -> list[UserSession]:

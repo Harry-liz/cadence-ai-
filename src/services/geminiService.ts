@@ -46,17 +46,108 @@ export interface StructuredChatResponse {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+interface TrackingContext {
+  userId: string | null;
+  sessionId: string | null;
+}
+
+const TRACKING_STORAGE_KEY = 'cadence-tracking-context';
+const TRACKED_PATHS = new Set([
+  '/api/chat',
+  '/api/chat/structured',
+  '/api/dining/recommend',
+  '/api/plan/day',
+  '/api/plan/edit-step',
+  '/api/interactions/event',
+  '/api/feedback',
+]);
+
+let trackingContextCache: TrackingContext | null = null;
+
+function canUseStorage() {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+function loadTrackingContext(): TrackingContext {
+  if (trackingContextCache) return trackingContextCache;
+  if (!canUseStorage()) {
+    trackingContextCache = { userId: null, sessionId: null };
+    return trackingContextCache;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(TRACKING_STORAGE_KEY);
+    if (!raw) {
+      trackingContextCache = { userId: null, sessionId: null };
+      return trackingContextCache;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<TrackingContext>;
+    trackingContextCache = {
+      userId: typeof parsed.userId === 'string' ? parsed.userId : null,
+      sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : null,
+    };
+    return trackingContextCache;
+  } catch {
+    trackingContextCache = { userId: null, sessionId: null };
+    return trackingContextCache;
+  }
+}
+
+function saveTrackingContext(next: Partial<TrackingContext>) {
+  const current = loadTrackingContext();
+  const merged: TrackingContext = {
+    userId: typeof next.userId === 'string' ? next.userId : current.userId,
+    sessionId: typeof next.sessionId === 'string' ? next.sessionId : current.sessionId,
+  };
+  trackingContextCache = merged;
+
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.setItem(TRACKING_STORAGE_KEY, JSON.stringify(merged));
+  } catch {
+    // Ignore storage write failures; requests can still proceed in-memory.
+  }
+}
+
+function buildTrackedBody(path: string, body: unknown) {
+  if (!TRACKED_PATHS.has(path) || !body || Array.isArray(body) || typeof body !== 'object') {
+    return body;
+  }
+
+  const payload = body as Record<string, unknown>;
+  const tracking = loadTrackingContext();
+  return {
+    ...payload,
+    user_id: payload.user_id ?? tracking.userId,
+    session_id: payload.session_id ?? tracking.sessionId,
+  };
+}
+
+function updateTrackingFromResponse(data: unknown) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+  const payload = data as Record<string, unknown>;
+  const userId = typeof payload.user_id === 'string' ? payload.user_id : undefined;
+  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : undefined;
+  if (userId || sessionId) {
+    saveTrackingContext({ userId, sessionId });
+  }
+}
+
 async function apiFetch<T>(path: string, body: unknown): Promise<T> {
+  const payload = buildTrackedBody(path, body);
   const res = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? JSON.stringify(err));
   }
-  return res.json();
+  const data = await res.json();
+  updateTrackingFromResponse(data);
+  return data;
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────────
@@ -107,40 +198,31 @@ export async function getChatResponseStructured(
   };
 }
 
+export interface VoiceTranscriptionResult {
+  text: string;
+  language?: string | null;
+}
+
+export async function transcribeVoiceInput(
+  audioBase64: string,
+  format: string
+): Promise<VoiceTranscriptionResult> {
+  const data = await apiFetch<{
+    text: string;
+    language?: string | null;
+  }>('/api/voice/transcribe', {
+    audio: audioBase64,
+    format,
+  });
+
+  return {
+    text: data.text ?? '',
+    language: data.language ?? null,
+  };
+}
+
 // ── 停车助手功能已停用 ─────────────────────────────────────────────────────────
 // export async function getParkingStatus(): Promise<ParkingLevel[]> { ... }
-
-// ── Events ────────────────────────────────────────────────────────────────────
-
-export interface EventItinerary {
-  steps: string[];
-  tip: string;
-}
-
-export interface TodayStatusItem {
-  label: string;
-  value: string;
-  tone: 'green' | 'amber' | 'indigo' | 'neutral';
-}
-
-export interface TodayHighlight {
-  title: string;
-  desc: string;
-  action: 'dining' | 'events' | 'chat';
-  actionLabel: string;
-  query?: string;
-}
-
-export interface TodaySummary {
-  headline: string;
-  subheadline: string;
-  statuses: TodayStatusItem[];
-  recommendedAction: string;
-  rightNow: string;
-  avoidNow: string;
-  bestFor: string[];
-  highlights: TodayHighlight[];
-}
 
 export interface DayPlan {
   summary: string;
@@ -151,65 +233,33 @@ export interface DayPlan {
   actionLabel?: string;
 }
 
+export type PlanFeel = 'light' | 'balanced' | 'immersive';
+
+export interface PlanVariant {
+  id: string;
+  feel: PlanFeel;
+  label: string;
+  subtitle: string;
+  fitReason: string;
+  plan: DayPlan;
+}
+
+export interface DayPlanBundle {
+  summary: string;
+  defaultVariantId: string;
+  feelVariants: PlanVariant[];
+}
+
 export interface PlanStepEditResult extends DayPlan {
   assistantNote: string;
   editedStepIndex: number;
 }
 
-export async function getEventItinerary(params: {
-  eventId: string;
-  eventTitle: string;
-  eventLocation: string;
-  eventTime: string;
-  eventDetails: string[];
-  scene: string;
-  arriveTime: string;
-}): Promise<EventItinerary> {
-  const data = await apiFetch<{ steps: string[]; tip: string }>('/api/events/itinerary', {
-    event_id: params.eventId,
-    event_title: params.eventTitle,
-    event_location: params.eventLocation,
-    event_time: params.eventTime,
-    event_details: params.eventDetails,
-    scene: params.scene,
-    arrive_time: params.arriveTime,
-  });
-  return { steps: data.steps ?? [], tip: data.tip ?? '' };
-}
-
-export async function getTodaySummary(): Promise<TodaySummary> {
-  const data = await apiGet<{
-    headline: string;
-    subheadline: string;
-    statuses: Array<{ label: string; value: string; tone: TodayStatusItem['tone'] }>;
-    recommended_action: string;
-    right_now: string;
-    avoid_now: string;
-    best_for: string[];
-    highlights: Array<{
-      title: string;
-      desc: string;
-      action: TodayHighlight['action'];
-      action_label: string;
-      query?: string;
-    }>;
-  }>('/api/today/summary');
-  return {
-    headline: data.headline,
-    subheadline: data.subheadline,
-    statuses: data.statuses ?? [],
-    recommendedAction: data.recommended_action,
-    rightNow: data.right_now,
-    avoidNow: data.avoid_now,
-    bestFor: data.best_for ?? [],
-    highlights: (data.highlights ?? []).map((item) => ({
-      title: item.title,
-      desc: item.desc,
-      action: item.action,
-      actionLabel: item.action_label,
-      query: item.query,
-    })),
-  };
+export interface InteractionEventPayload {
+  eventType: string;
+  targetType?: string;
+  targetId?: string;
+  payload?: Record<string, unknown>;
 }
 
 export async function generateDayPlan(params: {
@@ -219,14 +269,25 @@ export async function generateDayPlan(params: {
   budget?: number;
   arrivalTime?: string;
   contentPreferences?: string[];
-}): Promise<DayPlan> {
+}): Promise<DayPlanBundle> {
   const data = await apiFetch<{
     summary: string;
-    steps: string[];
-    tip: string;
-    suggestions: string[];
-    action?: string;
-    action_label?: string;
+    default_variant_id?: string;
+    feel_variants?: Array<{
+      id: string;
+      feel: PlanFeel;
+      label: string;
+      subtitle: string;
+      fit_reason?: string;
+      plan: {
+        summary: string;
+        steps: string[];
+        tip: string;
+        suggestions: string[];
+        action?: string;
+        action_label?: string;
+      };
+    }>;
   }>('/api/plan/day', {
     scene: params.scene,
     people: params.people,
@@ -236,13 +297,26 @@ export async function generateDayPlan(params: {
     content_preferences: params.contentPreferences ?? [],
   });
 
+  const feelVariants = (data.feel_variants ?? []).map((variant) => ({
+    id: variant.id,
+    feel: variant.feel,
+    label: variant.label,
+    subtitle: variant.subtitle,
+    fitReason: variant.fit_reason ?? '',
+    plan: {
+      summary: variant.plan.summary,
+      steps: variant.plan.steps ?? [],
+      tip: variant.plan.tip ?? '',
+      suggestions: variant.plan.suggestions ?? [],
+      action: variant.plan.action as DayPlan['action'],
+      actionLabel: variant.plan.action_label,
+    },
+  }));
+
   return {
     summary: data.summary,
-    steps: data.steps ?? [],
-    tip: data.tip ?? '',
-    suggestions: data.suggestions ?? [],
-    action: data.action as DayPlan['action'],
-    actionLabel: data.action_label,
+    defaultVariantId: data.default_variant_id ?? feelVariants[0]?.id ?? 'balanced',
+    feelVariants,
   };
 }
 
@@ -295,6 +369,15 @@ export async function editDayPlanStep(params: {
     action: data.action as DayPlan['action'],
     actionLabel: data.action_label,
   };
+}
+
+export async function postInteractionEvent(params: InteractionEventPayload): Promise<void> {
+  await apiFetch('/api/interactions/event', {
+    event_type: params.eventType,
+    target_type: params.targetType,
+    target_id: params.targetId,
+    payload: params.payload ?? {},
+  });
 }
 // export async function makeReservation(...): Promise<ParkingReservation> { ... }
 // export async function getParkingResponse(...): Promise<string> { ... }

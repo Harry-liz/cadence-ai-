@@ -405,6 +405,26 @@ class VenuePerformanceDaily(Base):
     negative_feedback_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+class VenueEngagementDaily(Base):
+    __tablename__ = "venue_engagement_daily"
+    __table_args__ = (
+        PrimaryKeyConstraint("metric_date", "mall_id", "source", "venue_name", name="pk_venue_engagement_daily"),
+    )
+
+    metric_date: Mapped[date] = mapped_column(Date, nullable=False)
+    mall_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("malls.id", ondelete="CASCADE"), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="dining_recommendation")
+    venue_name: Mapped[str] = mapped_column(Text, nullable=False)
+    venue_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("venues.id", ondelete="SET NULL"))
+    view_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    meaningful_view_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    quick_skip_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_dwell_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    avg_dwell_ms: Mapped[int | None] = mapped_column(Integer)
+    median_dwell_ms: Mapped[int | None] = mapped_column(Integer)
+    max_dwell_ms: Mapped[int | None] = mapped_column(Integer)
+
+
 class MallDemandDaily(Base):
     __tablename__ = "mall_demand_daily"
     __table_args__ = (

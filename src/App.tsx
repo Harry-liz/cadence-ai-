@@ -30,6 +30,8 @@ import {
   TrendingUp,
   Timer,
   Zap,
+  Mic,
+  MicOff,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -38,11 +40,11 @@ import {
   getChatResponseStructured,
   getMemberProfile, postCheckin, getMemberCoupons,
   getMemberTransactions, getMemberPointsHistory, editDayPlanStep,
-  getTodaySummary, generateDayPlan,
+  generateDayPlan, postInteractionEvent, transcribeVoiceInput,
   type Restaurant, type Deal,
   type StructuredChatResponse,
   type MemberProfile, type Coupon, type Transaction, type PointsRecord, type CheckinResult,
-  type TodaySummary, type DayPlan,
+  type DayPlan, type InteractionEventPayload, type PlanFeel, type PlanVariant,
 } from './services/geminiService';
 // 停车助手功能已停用：getParkingResponse, getParkingStatus, makeReservation
 // type ParkingLevel, type ParkingReservation
@@ -64,7 +66,108 @@ function resolveRestaurantImage(src: string) {
   return src;
 }
 
-type Mode = 'home' | 'today' | 'plan' | 'chat' | 'dining' | 'style' | 'events' | 'member'; // 'parking' 已停用
+const VOICE_RECORDING_PLACEHOLDER = '正在录音，点一下结束...';
+const VOICE_TRANSCRIBING_PLACEHOLDER = '正在识别语言并转写...';
+const VOICE_RECORDER_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/mp4',
+  'audio/ogg;codecs=opus',
+  'audio/webm',
+  'audio/ogg',
+] as const;
+
+function getSupportedVoiceRecorderMimeType() {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return '';
+  }
+  return VOICE_RECORDER_MIME_TYPES.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) ?? '';
+}
+
+function writeWavString(view: DataView, offset: number, value: string) {
+  for (let i = 0; i < value.length; i++) {
+    view.setUint8(offset + i, value.charCodeAt(i));
+  }
+}
+
+function mixAudioBufferToMono(audioBuffer: AudioBuffer) {
+  if (audioBuffer.numberOfChannels === 1) {
+    return audioBuffer.getChannelData(0);
+  }
+
+  const mixed = new Float32Array(audioBuffer.length);
+  for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+    const data = audioBuffer.getChannelData(channel);
+    for (let i = 0; i < data.length; i++) {
+      mixed[i] += data[i] / audioBuffer.numberOfChannels;
+    }
+  }
+  return mixed;
+}
+
+function encodeMonoWav(samples: Float32Array, sampleRate: number) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  writeWavString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + samples.length * 2, true);
+  writeWavString(view, 8, 'WAVE');
+  writeWavString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeWavString(view, 36, 'data');
+  view.setUint32(40, samples.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const sample = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    offset += 2;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function blobToBase64(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('Unable to read audio data.'));
+        return;
+      }
+      resolve(result.split(',', 2)[1] ?? '');
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Unable to read audio data.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function convertAudioBlobToWavBase64(blob: Blob) {
+  const AudioContextCtor = window.AudioContext
+    ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) {
+    throw new Error('AudioContext is not supported in this browser.');
+  }
+
+  const audioContext = new AudioContextCtor();
+  try {
+    const inputBuffer = await blob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(inputBuffer);
+    const monoSamples = mixAudioBufferToMono(audioBuffer);
+    const wavBlob = encodeMonoWav(monoSamples, audioBuffer.sampleRate);
+    return await blobToBase64(wavBlob);
+  } finally {
+    await audioContext.close().catch(() => undefined);
+  }
+}
+
+type Mode = 'home' | 'plan' | 'chat' | 'dining' | 'style' | 'events' | 'member'; // 'parking' 已停用
 
 type MemberSubPage = 'overview' | 'coupons' | 'transactions' | 'points';
 
@@ -88,7 +191,28 @@ interface ActivePlan {
   budget?: number;
   arrivalTime?: string;
   contentPreferences: PlanContentPreference[];
-  plan: DayPlan;
+  summary: string;
+  planVariants: PlanVariant[];
+  selectedVariantId: string;
+}
+
+interface NavigationSnapshot {
+  mode: Mode;
+  result: string | Restaurant[] | null;
+  activePlan: ActivePlan | null;
+  selectedEvent: MallEvent | null;
+  chatReturnTarget: Mode | null;
+  styleCameraOpen: boolean;
+  styleAnalysisResult: string | null;
+  styleSpotResults: StyleSpot[];
+  styleRecommendationApplied: boolean;
+  memberSubPage: MemberSubPage;
+  planEditOpen: boolean;
+  selectedPlanStepIndex: number | null;
+  planEditInput: string;
+  planEditNote: string | null;
+  planEditScope: 'single' | 'cascade';
+  recentlyEditedPlanStepIndex: number | null;
 }
 
 type PlanContentPreference = '活动' | '购物' | '美食';
@@ -98,6 +222,94 @@ interface PlanPreferences {
   people: number;
   durationHours: number;
   contentPreferences: PlanContentPreference[];
+}
+
+const PLAN_VARIANT_ORDER: PlanFeel[] = ['light', 'balanced', 'immersive'];
+
+const LOCAL_PLAN_VARIANT_META: Record<PlanFeel, { label: string; subtitle: string; fitReason: string }> = {
+  light: {
+    label: '省力版',
+    subtitle: '少绕路，逛起来更轻松',
+    fitReason: '适合想稳妥逛重点、不想把路线排太满的时候。',
+  },
+  balanced: {
+    label: '标准版',
+    subtitle: '吃逛玩兼顾，整体最稳',
+    fitReason: '适合第一次来或还没想好今天想偏哪一边的时候。',
+  },
+  immersive: {
+    label: '高参与版',
+    subtitle: '安排更满，体验感更强',
+    fitReason: '适合想多看几个点、今天更想逛出参与感的时候。',
+  },
+};
+
+function getSelectedPlanVariant(plan: ActivePlan | null) {
+  if (!plan || plan.planVariants.length === 0) return null;
+  return plan.planVariants.find((variant) => variant.id === plan.selectedVariantId) ?? plan.planVariants[0];
+}
+
+function buildLocalPlanFallbackVariants(params: {
+  scene: string;
+  people: number;
+  durationHours: number;
+  contentPreferences: PlanContentPreference[];
+}): { summary: string; defaultVariantId: string; feelVariants: PlanVariant[] } {
+  const prefText = params.contentPreferences.length > 0 ? params.contentPreferences.join('、') : '轻松逛逛';
+  const feelPlans: Record<PlanFeel, DayPlan> = {
+    light: {
+      summary: `这条路线会先抓重点再顺路收尾，更适合 ${params.scene} 这种想轻松一点的走法。`,
+      steps: [
+        '先去 L1 或 B2 看今天最值得去的一个重点点位，不一上来就分散注意力',
+        '中段只补一个最顺路的购物或休息点，把节奏稳住',
+        '最后找一家顺路餐饮或咖啡店收尾，不把路线排太满',
+      ],
+      tip: '如果今天想省体力，就优先保留最想看的重点和最后一段坐下来休息的时间。',
+      suggestions: ['能不能更省体力一点', '把吃饭提前', '只保留最值得去的点'],
+      action: 'dining',
+      actionLabel: '去看美食推荐',
+    },
+    balanced: {
+      summary: `这条路线会把 ${prefText} 尽量都带上，整体更适合大多数人的标准走法。`,
+      steps: [
+        '先去 L1 看一个今天最值得去的活动或亮点点位开场',
+        '中段顺路补一段购物或休闲停留，让路线不只是赶场',
+        '后面安排一段明确的餐饮或咖啡休息，把节奏接顺',
+        '如果还有时间，再留一点空间给想补逛的店或区域',
+      ],
+      tip: '标准版最适合第一次走，先照着走一遍，再按兴趣微调其中一步就够了。',
+      suggestions: ['顺路吃什么更合适', '第二步能换一下吗', '想改成约会感更强的版本'],
+      action: 'dining',
+      actionLabel: '去看美食推荐',
+    },
+    immersive: {
+      summary: `这条路线会多留几个停留点，整体更满，更适合今天想逛出参与感的时候。`,
+      steps: [
+        '先去 L1 看今天最有参与感的活动或展陈点，把开场氛围拉起来',
+        '接着去一个更适合停留或互动的区域，不只是快速路过',
+        '中段补一段更明确的购物或主题店停留，把想看的内容逛完整',
+        '后面安排餐饮或咖啡作为节奏转换，不让整条路线太硬',
+        '最后再留一小段时间给拍照、补逛或临时想进的点位',
+      ],
+      tip: '高参与版更适合预留一点弹性，如果某个点今天特别喜欢，可以多停 10 分钟也没关系。',
+      suggestions: ['我想再丰富一点', '加一个适合拍照的点', '最后接甜品或咖啡'],
+      action: 'events',
+      actionLabel: '去看更多活动',
+    },
+  };
+
+  return {
+    summary: '给你 3 条不同体感的路线，默认先看最稳的标准版。',
+    defaultVariantId: 'balanced',
+    feelVariants: PLAN_VARIANT_ORDER.map((feel) => ({
+      id: feel,
+      feel,
+      label: LOCAL_PLAN_VARIANT_META[feel].label,
+      subtitle: LOCAL_PLAN_VARIANT_META[feel].subtitle,
+      fitReason: LOCAL_PLAN_VARIANT_META[feel].fitReason,
+      plan: feelPlans[feel],
+    })),
+  };
 }
 
 type StyleSeason = '春夏' | '秋冬';
@@ -337,6 +549,122 @@ export default function App() {
   const [styleSpotResults, setStyleSpotResults] = useState<StyleSpot[]>([]);
   const [styleRecommendationApplied, setStyleRecommendationApplied] = useState(false);
 
+  // Voice input
+  const [isListening, setIsListening] = useState(false);
+  const [isVoiceTranscribing, setIsVoiceTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+
+  const stopVoiceStream = useCallback(() => {
+    voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+    voiceStreamRef.current = null;
+  }, []);
+
+  const finalizeVoiceRecording = useCallback(async () => {
+    const chunks = [...voiceChunksRef.current];
+    voiceChunksRef.current = [];
+    mediaRecorderRef.current = null;
+    stopVoiceStream();
+
+    if (chunks.length === 0) {
+      setIsVoiceTranscribing(false);
+      return;
+    }
+
+    try {
+      const recordedBlob = new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' });
+      const wavBase64 = await convertAudioBlobToWavBase64(recordedBlob);
+      const { text } = await transcribeVoiceInput(wavBase64, 'wav');
+      if (!text.trim()) {
+        alert('没有识别到清晰的语音，请再试一次。');
+        return;
+      }
+      setChatInput(text.trim());
+    } catch (error) {
+      console.error('Voice transcription error:', error);
+      alert(error instanceof Error ? error.message : '语音识别失败，请稍后再试。');
+    } finally {
+      setIsVoiceTranscribing(false);
+    }
+  }, [stopVoiceStream]);
+
+  const toggleVoiceInput = useCallback(async () => {
+    if (isVoiceTranscribing) return;
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      alert('您的浏览器不支持语音录音，请使用 Chrome、Edge 或 Safari。');
+      return;
+    }
+
+    if (isListening && mediaRecorderRef.current) {
+      setIsListening(false);
+      setIsVoiceTranscribing(true);
+      mediaRecorderRef.current.stop();
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedVoiceRecorderMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      voiceStreamRef.current = stream;
+      voiceChunksRef.current = [];
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          voiceChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        void finalizeVoiceRecording();
+      };
+
+      recorder.onerror = (event) => {
+        console.error('Voice recording error:', event);
+        voiceChunksRef.current = [];
+        mediaRecorderRef.current = null;
+        stopVoiceStream();
+        setIsVoiceTranscribing(false);
+        setIsListening(false);
+        alert('语音录制失败，请重试。');
+      };
+
+      recorder.start();
+      setIsVoiceTranscribing(false);
+      setIsListening(true);
+    } catch (error) {
+      console.error('Voice capture error:', error);
+      setIsListening(false);
+      setIsVoiceTranscribing(false);
+      if (error instanceof DOMException && error.name === 'NotAllowedError') {
+        alert('请允许麦克风权限以使用语音输入。');
+        return;
+      }
+      alert('无法打开麦克风，请检查设备或浏览器设置。');
+    }
+  }, [finalizeVoiceRecording, isListening, isVoiceTranscribing, stopVoiceStream]);
+
+  useEffect(() => {
+    return () => {
+      const recorder = mediaRecorderRef.current;
+      if (recorder) {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        recorder.onerror = null;
+        if (recorder.state !== 'inactive') {
+          recorder.stop();
+        }
+      }
+      stopVoiceStream();
+    };
+  }, [stopVoiceStream]);
+
   // Chat State
   const [chatInput, setChatInput] = useState('');
   const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'ai', text: string }[]>([]);
@@ -344,8 +672,7 @@ export default function App() {
   const [chatStreaming, setChatStreaming] = useState('');
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const [chatReturnTarget, setChatReturnTarget] = useState<Mode | null>(null);
-  const [todaySummary, setTodaySummary] = useState<TodaySummary | null>(null);
-  const [todayLoading, setTodayLoading] = useState(true);
+  const [navigationHistory, setNavigationHistory] = useState<NavigationSnapshot[]>([]);
   const [quickPlanLoadingId, setQuickPlanLoadingId] = useState<string | null>(null);
   const [activePlan, setActivePlan] = useState<ActivePlan | null>(null);
   const [planEditOpen, setPlanEditOpen] = useState(false);
@@ -362,6 +689,18 @@ export default function App() {
     contentPreferences: ['活动', '购物', '美食'],
   });
   const [planGenerating, setPlanGenerating] = useState(false);
+  const selectedPlanVariant = getSelectedPlanVariant(activePlan);
+  const displayedPlan = selectedPlanVariant?.plan ?? null;
+
+  const resetPlanEditorState = useCallback(() => {
+    setPlanEditOpen(false);
+    setSelectedPlanStepIndex(null);
+    setPlanEditInput('');
+    setPlanEditLoading(false);
+    setPlanEditNote(null);
+    setPlanEditScope('single');
+    setRecentlyEditedPlanStepIndex(null);
+  }, []);
 
   // Events State
   const [selectedEvent, setSelectedEvent] = useState<MallEvent | null>(null);
@@ -389,6 +728,12 @@ export default function App() {
   const [centerEventIndex, setCenterEventIndex] = useState(0);
   const eventsScrollRef = useRef<HTMLDivElement>(null);
   const restaurantsScrollRef = useRef<HTMLDivElement>(null);
+  const activeRestaurantViewRef = useRef<{
+    key: string;
+    restaurant: Restaurant;
+    index: number;
+    startedAt: number;
+  } | null>(null);
 
   const getCarouselEvents = () => [
     ...MALL_EVENTS.filter((event) => getEventStatus(event) === 'ongoing'),
@@ -415,7 +760,18 @@ export default function App() {
   const handleCarouselCardClick = (index: number) => {
     if (index === centerEventIndex) {
       const ev = getCarouselEvents()[index];
+      pushNavigationSnapshot();
       setSelectedEvent(ev);
+      trackInteraction({
+        eventType: 'view_venue',
+        targetType: 'event',
+        targetId: ev.id,
+        payload: {
+          title: ev.title,
+          status: getEventStatus(ev),
+          location: ev.location,
+        },
+      });
     } else {
       scrollToEventIndex(index);
     }
@@ -429,6 +785,14 @@ export default function App() {
   const handleSceneFilter = (scene: string) => {
     const next = eventSceneFilter === scene ? '' : scene;
     setEventSceneFilter(next);
+    trackInteraction({
+      eventType: 'filter_events',
+      targetType: 'event_collection',
+      payload: {
+        scene,
+        selected_scene: next || null,
+      },
+    });
     if (!next) return;
     const carouselEvents = getCarouselEvents();
     const bestIdx = (() => {
@@ -534,13 +898,6 @@ export default function App() {
     });
   };
 
-  const getTodayToneClasses = (tone: TodaySummary['statuses'][number]['tone']) => {
-    if (tone === 'green') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
-    if (tone === 'amber') return 'bg-amber-50 text-amber-700 border-amber-100';
-    if (tone === 'indigo') return 'bg-indigo-50 text-indigo-700 border-indigo-100';
-    return 'bg-neutral-50 text-neutral-700 border-neutral-200';
-  };
-
   const startCamera = async () => {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ 
@@ -564,60 +921,6 @@ export default function App() {
       videoRef.current.play().catch(e => console.error("Video play error:", e));
     }
   }, [stream, mode]);
-
-  useEffect(() => {
-    let mounted = true;
-    getTodaySummary()
-      .then((data) => {
-        if (mounted) setTodaySummary(data);
-      })
-      .catch((err) => {
-        console.error(err);
-        if (mounted) {
-          setTodaySummary({
-            headline: '今天适合轻松来逛',
-            subheadline: '如果你时间不多，建议优先看活动或先吃饭，不要把路线排太满。',
-            statuses: [
-              { label: '今日活动', value: '可以先看 L1 中庭', tone: 'green' },
-              { label: '餐饮状态', value: '错峰更舒服', tone: 'amber' },
-              { label: '商场人流', value: '整体可接受', tone: 'indigo' },
-            ],
-            recommendedAction: '先看活动，再顺路去 B1 或 L3 吃饭，会更轻松。',
-            rightNow: '先看一个重点内容，再顺路吃饭会最舒服。',
-            avoidNow: '不要把路线排太满，也别一上来就冲最热门的店。',
-            bestFor: ['2 小时轻量逛', '下班后顺路来', '约会碰面'],
-            highlights: [
-              {
-                title: '今天先看什么',
-                desc: '先从活动重点开始最不容易踩坑。',
-                action: 'events',
-                actionLabel: '查看活动',
-              },
-              {
-                title: '今天怎么吃更顺',
-                desc: '想少排队，就把用餐安排在活动之后。',
-                action: 'dining',
-                actionLabel: '去看美食推荐',
-              },
-              {
-                title: '直接帮我安排',
-                desc: '如果你只想要一条今天最值的路线，我可以直接排给你。',
-                action: 'chat',
-                actionLabel: '让 Cadence 安排',
-                query: '帮我安排今天在中洲湾的路线',
-              },
-            ],
-          });
-        }
-      })
-      .finally(() => {
-        if (mounted) setTodayLoading(false);
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
 
   useEffect(() => {
     if (!showSplash) return;
@@ -652,6 +955,90 @@ export default function App() {
     }
   };
 
+  const buildNavigationSnapshot = useCallback((): NavigationSnapshot => ({
+    mode,
+    result,
+    activePlan,
+    selectedEvent,
+    chatReturnTarget,
+    styleCameraOpen,
+    styleAnalysisResult,
+    styleSpotResults,
+    styleRecommendationApplied,
+    memberSubPage,
+    planEditOpen,
+    selectedPlanStepIndex,
+    planEditInput,
+    planEditNote,
+    planEditScope,
+    recentlyEditedPlanStepIndex,
+  }), [
+    mode,
+    result,
+    activePlan,
+    selectedEvent,
+    chatReturnTarget,
+    styleCameraOpen,
+    styleAnalysisResult,
+    styleSpotResults,
+    styleRecommendationApplied,
+    memberSubPage,
+    planEditOpen,
+    selectedPlanStepIndex,
+    planEditInput,
+    planEditNote,
+    planEditScope,
+    recentlyEditedPlanStepIndex,
+  ]);
+
+  const pushNavigationSnapshot = useCallback(() => {
+    setNavigationHistory((prev) => [...prev, buildNavigationSnapshot()]);
+  }, [buildNavigationSnapshot]);
+
+  const restoreNavigationSnapshot = useCallback((snapshot: NavigationSnapshot) => {
+    if (snapshot.mode !== 'style') {
+      stopCamera();
+      setStyleCameraOpen(false);
+    }
+
+    setMode(snapshot.mode);
+    setResult(snapshot.result);
+    setActivePlan(snapshot.activePlan);
+    setSelectedEvent(snapshot.selectedEvent);
+    setChatReturnTarget(snapshot.chatReturnTarget);
+    setStyleCameraOpen(snapshot.styleCameraOpen);
+    setStyleAnalysisResult(snapshot.styleAnalysisResult);
+    setStyleSpotResults(snapshot.styleSpotResults);
+    setStyleRecommendationApplied(snapshot.styleRecommendationApplied);
+    setMemberSubPage(snapshot.memberSubPage);
+    setPlanEditOpen(snapshot.planEditOpen);
+    setSelectedPlanStepIndex(snapshot.selectedPlanStepIndex);
+    setPlanEditInput(snapshot.planEditInput);
+    setPlanEditNote(snapshot.planEditNote);
+    setPlanEditScope(snapshot.planEditScope);
+    setRecentlyEditedPlanStepIndex(snapshot.recentlyEditedPlanStepIndex);
+    setResult(null);
+    setLoading(false);
+    setChatStreaming('');
+  }, [stopCamera]);
+
+  const handleGoBack = useCallback(() => {
+    if (navigationHistory.length === 0) {
+      stopCamera();
+      setStyleCameraOpen(false);
+      setChatReturnTarget(null);
+      setSelectedEvent(null);
+      setNavigationHistory([]);
+      setMode('home');
+      setResult(null);
+      return;
+    }
+
+    const previousSnapshot = navigationHistory[navigationHistory.length - 1];
+    setNavigationHistory((prev) => prev.slice(0, -1));
+    restoreNavigationSnapshot(previousSnapshot);
+  }, [navigationHistory, restoreNavigationSnapshot, stopCamera]);
+
   const handleCapture = async () => {
     if (!videoRef.current || !canvasRef.current) return;
     
@@ -668,6 +1055,7 @@ export default function App() {
     setLoading(true);
     try {
       const advice = await getStyleAdvice(imageData);
+      pushNavigationSnapshot();
       setStyleAnalysisResult(advice || "Sorry, I couldn't analyze the image.");
       setStyleCameraOpen(false);
     } catch (err) {
@@ -690,6 +1078,7 @@ export default function App() {
       })
       .sort((a, b) => b.score - a.score);
 
+    pushNavigationSnapshot();
     setStyleSpotResults(ranked.slice(0, 3).map((item) => item.spot));
     setStyleRecommendationApplied(true);
     setStyleAnalysisResult(null);
@@ -698,6 +1087,7 @@ export default function App() {
   };
 
   const handleOpenStyleCamera = async () => {
+    pushNavigationSnapshot();
     setStyleAnalysisResult(null);
     setStyleCameraOpen(true);
     await startCamera();
@@ -718,6 +1108,97 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [recentlyEditedPlanStepIndex]);
 
+  const trackInteraction = useCallback((params: InteractionEventPayload) => {
+    void postInteractionEvent(params).catch((err) => {
+      console.error('Failed to track interaction event:', err);
+    });
+  }, []);
+
+  const flushRestaurantRecommendationView = useCallback((
+    reason: 'switch_card' | 'reset_results' | 'leave_dining' | 'page_hidden'
+  ) => {
+    const activeView = activeRestaurantViewRef.current;
+    activeRestaurantViewRef.current = null;
+    if (!activeView) return;
+
+    const dwellMs = Date.now() - activeView.startedAt;
+    if (dwellMs < 800) return;
+
+    trackInteraction({
+      eventType: 'view_venue',
+      targetType: 'venue',
+      targetId: activeView.restaurant.name,
+      payload: {
+        source: 'dining_recommendation',
+        index: activeView.index,
+        name: activeView.restaurant.name,
+        category: activeView.restaurant.category,
+        budget: activeView.restaurant.budget,
+        rating: activeView.restaurant.rating,
+        dwell_ms: dwellMs,
+        end_reason: reason,
+      },
+    });
+  }, [trackInteraction]);
+
+  const startRestaurantRecommendationView = useCallback((restaurant: Restaurant, index: number) => {
+    const trackingKey = `${restaurant.name}::${index}`;
+    if (activeRestaurantViewRef.current?.key === trackingKey) return;
+
+    flushRestaurantRecommendationView('switch_card');
+    activeRestaurantViewRef.current = {
+      key: trackingKey,
+      restaurant,
+      index,
+      startedAt: Date.now(),
+    };
+  }, [flushRestaurantRecommendationView]);
+
+  const handleRestaurantScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (!Array.isArray(result) || result.length === 0) return;
+    const el = e.currentTarget;
+    const cardHeight = el.clientHeight;
+    if (!cardHeight) return;
+    const idx = Math.max(0, Math.min(Math.round(el.scrollTop / cardHeight), result.length - 1));
+    const restaurant = result[idx];
+    if (restaurant) {
+      startRestaurantRecommendationView(restaurant, idx);
+    }
+  }, [result, startRestaurantRecommendationView]);
+
+  useEffect(() => {
+    if (mode !== 'dining') {
+      flushRestaurantRecommendationView('leave_dining');
+      return;
+    }
+
+    if (!Array.isArray(result) || result.length === 0) {
+      flushRestaurantRecommendationView('reset_results');
+      return;
+    }
+
+    startRestaurantRecommendationView(result[0], 0);
+  }, [flushRestaurantRecommendationView, mode, result, startRestaurantRecommendationView]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushRestaurantRecommendationView('page_hidden');
+      }
+    };
+
+    const handlePageHide = () => {
+      flushRestaurantRecommendationView('page_hidden');
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [flushRestaurantRecommendationView]);
+
   const handleDiningSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -729,7 +1210,21 @@ export default function App() {
         taste && `口味偏好：${taste}`,
       ].filter(Boolean).join('；');
       const recommendation = await getDiningRecommendation(budget, people, fullPrefs);
+      pushNavigationSnapshot();
       setResult(recommendation);
+      trackInteraction({
+        eventType: 'request_dining_recommendation',
+        targetType: 'recommendation',
+        payload: {
+          budget,
+          people,
+          meal_type: mealType,
+          scene,
+          env_preferences: envPrefs,
+          taste,
+          result_count: recommendation.length,
+        },
+      });
     } catch (err) {
       console.error(err);
       setResult("Error getting recommendations.");
@@ -804,7 +1299,7 @@ export default function App() {
           ...nextHistory,
           {
             role: 'ai',
-            text: '抱歉，Cadence 现在有点忙。你可以先看 Today 状态，或者试试「一键成行」。',
+            text: '抱歉，Cadence 现在有点忙。你可以先试试「一键成行」或直接问我一个更具体的问题。',
             suggestions: ['今天值不值得来', '我有 2 小时', '推荐一家餐厅'],
           },
         ]);
@@ -824,7 +1319,8 @@ export default function App() {
     budget?: number;
     contentPreferences: PlanContentPreference[];
   }) => {
-    const plan = await generateDayPlan({
+    pushNavigationSnapshot();
+    const planBundle = await generateDayPlan({
       scene: params.scene,
       people: params.people,
       durationHours: params.durationHours,
@@ -832,13 +1328,7 @@ export default function App() {
       contentPreferences: params.contentPreferences,
     });
 
-    setPlanEditOpen(false);
-    setSelectedPlanStepIndex(null);
-    setPlanEditInput('');
-    setPlanEditLoading(false);
-    setPlanEditNote(null);
-    setPlanEditScope('single');
-    setRecentlyEditedPlanStepIndex(null);
+    resetPlanEditorState();
     setActivePlan({
       title: params.title,
       subtitle: params.subtitle,
@@ -847,24 +1337,44 @@ export default function App() {
       durationHours: params.durationHours,
       budget: params.budget,
       contentPreferences: params.contentPreferences,
-      plan,
+      summary: planBundle.summary,
+      planVariants: planBundle.feelVariants,
+      selectedVariantId: planBundle.defaultVariantId,
     });
     setMode('plan');
+    trackInteraction({
+      eventType: 'generate_plan',
+      targetType: 'plan',
+      payload: {
+        source_title: params.title,
+        scene: params.scene,
+        people: params.people,
+        duration_hours: params.durationHours,
+        budget: params.budget,
+        content_preferences: params.contentPreferences,
+        variant_count: planBundle.feelVariants.length,
+        default_variant_id: planBundle.defaultVariantId,
+        step_count: planBundle.feelVariants.find((variant) => variant.id === planBundle.defaultVariantId)?.plan.steps.length ?? 0,
+      },
+    });
   };
 
   const openPlanBuilder = (overrides?: Partial<PlanPreferences>) => {
-    setPlanEditOpen(false);
-    setSelectedPlanStepIndex(null);
-    setPlanEditInput('');
-    setPlanEditLoading(false);
-    setPlanEditNote(null);
-    setPlanEditScope('single');
-    setRecentlyEditedPlanStepIndex(null);
+    pushNavigationSnapshot();
+    resetPlanEditorState();
     setActivePlan(null);
     if (overrides) {
       setPlanPreferences((prev) => ({ ...prev, ...overrides }));
     }
     setMode('plan');
+    trackInteraction({
+      eventType: 'select_plan',
+      targetType: 'plan_builder',
+      payload: {
+        source: overrides ? 'guided_entry' : 'manual_open',
+        overrides: overrides ?? {},
+      },
+    });
   };
 
   const handleQuickPlan = async (preset: typeof quickPlanPresets[number]) => {
@@ -874,6 +1384,17 @@ export default function App() {
     }
 
     setQuickPlanLoadingId(preset.id);
+    trackInteraction({
+      eventType: 'select_plan',
+      targetType: 'plan_preset',
+      targetId: preset.id,
+      payload: {
+        label: preset.label,
+        scene: preset.scene,
+        duration_hours: preset.durationHours,
+        budget: preset.budget,
+      },
+    });
     try {
       await openPlanResult({
         title: preset.label,
@@ -886,13 +1407,13 @@ export default function App() {
       });
     } catch (err) {
       console.error(err);
-      setPlanEditOpen(false);
-      setSelectedPlanStepIndex(null);
-      setPlanEditInput('');
-      setPlanEditLoading(false);
-      setPlanEditNote(null);
-      setPlanEditScope('single');
-      setRecentlyEditedPlanStepIndex(null);
+      resetPlanEditorState();
+      const localFallbackBundle = buildLocalPlanFallbackVariants({
+        scene: preset.scene,
+        people: planPreferences.people,
+        durationHours: preset.durationHours,
+        contentPreferences: planPreferences.contentPreferences,
+      });
       setActivePlan({
         title: preset.label,
         subtitle: preset.desc,
@@ -901,14 +1422,9 @@ export default function App() {
         durationHours: preset.durationHours,
         budget: preset.budget,
         contentPreferences: planPreferences.contentPreferences,
-        plan: {
-          summary: '我先给你一个轻量建议：先去 L1 看重点活动，再顺路去 B1 或 L3 吃饭，这样今天最不容易踩坑。',
-          steps: ['先去 L1 中庭看重点活动', '再去 B1 或 L3 安排用餐', '最后留一点时间轻松逛逛'],
-          tip: '时间不多的时候，不要把路线排得太满。',
-          suggestions: ['换一个场景试试', '帮我推荐餐厅', '今天有什么活动'],
-          action: 'dining',
-          actionLabel: '去看美食推荐',
-        },
+        summary: localFallbackBundle.summary,
+        planVariants: localFallbackBundle.feelVariants,
+        selectedVariantId: localFallbackBundle.defaultVariantId,
       });
       setMode('plan');
     } finally {
@@ -916,18 +1432,8 @@ export default function App() {
     }
   };
 
-  const handleTodayHighlight = async (highlight: TodaySummary['highlights'][number]) => {
-    if (highlight.action === 'chat') {
-      openPlanBuilder({ sceneId: 'solo', people: 1, durationHours: 2 });
-      return;
-    }
-
-    if (highlight.action === 'dining' || highlight.action === 'events') {
-      handleModeChange(highlight.action);
-    }
-  };
-
   const openFreshChat = async (msg: string, options?: { returnTarget?: Mode | null }) => {
+    pushNavigationSnapshot();
     setChatReturnTarget(options?.returnTarget ?? null);
     setMode('chat');
     await sendChatMessage(msg, { resetHistory: true });
@@ -935,7 +1441,7 @@ export default function App() {
 
   const handlePlanStepEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activePlan || selectedPlanStepIndex === null || !planEditInput.trim()) return;
+    if (!activePlan || !displayedPlan || selectedPlanStepIndex === null || !planEditInput.trim()) return;
 
     setPlanEditLoading(true);
     try {
@@ -945,7 +1451,7 @@ export default function App() {
         durationHours: activePlan.durationHours,
         budget: activePlan.budget,
         arrivalTime: activePlan.arrivalTime,
-        currentPlan: activePlan.plan,
+        currentPlan: displayedPlan,
         selectedStepIndex: selectedPlanStepIndex,
         instruction: planEditInput.trim(),
         updateScope: planEditScope,
@@ -953,19 +1459,37 @@ export default function App() {
 
       setActivePlan({
         ...activePlan,
-        plan: {
-          summary: updated.summary,
-          steps: updated.steps,
-          tip: updated.tip,
-          suggestions: updated.suggestions,
-          action: updated.action,
-          actionLabel: updated.actionLabel,
-        },
+        planVariants: activePlan.planVariants.map((variant) => (
+          variant.id === activePlan.selectedVariantId
+            ? {
+                ...variant,
+                plan: {
+                  summary: updated.summary,
+                  steps: updated.steps,
+                  tip: updated.tip,
+                  suggestions: updated.suggestions,
+                  action: updated.action,
+                  actionLabel: updated.actionLabel,
+                },
+              }
+            : variant
+        )),
       });
       setSelectedPlanStepIndex(updated.editedStepIndex);
       setRecentlyEditedPlanStepIndex(updated.editedStepIndex);
       setPlanEditNote(updated.assistantNote);
       setPlanEditInput('');
+      trackInteraction({
+        eventType: 'edit_plan_step',
+        targetType: 'plan',
+        payload: {
+          scene: activePlan.scene,
+          selected_step_index: selectedPlanStepIndex,
+          edited_step_index: updated.editedStepIndex,
+          update_scope: planEditScope,
+          instruction: planEditInput.trim(),
+        },
+      });
     } catch (err) {
       console.error(err);
       setPlanEditNote('这一步暂时没改成功，你可以换个说法再试一次。');
@@ -975,8 +1499,9 @@ export default function App() {
   };
 
   const openPlanChatFollowup = async () => {
-    if (!activePlan) return;
-    const routeText = activePlan.plan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
+    if (!activePlan || !selectedPlanVariant || !displayedPlan) return;
+    pushNavigationSnapshot();
+    const routeText = displayedPlan.steps.map((step, index) => `${index + 1}. ${step}`).join('\n');
     const hiddenContext: ChatMsg = {
       role: 'user',
       hidden: true,
@@ -984,42 +1509,51 @@ export default function App() {
         `这是用户当前的一键成行路线，请你后续都基于这条路线继续对话。`,
         `标题：${activePlan.title}`,
         `副标题：${activePlan.subtitle}`,
+        `当前体感路线：${selectedPlanVariant.label}`,
+        `体感说明：${selectedPlanVariant.subtitle}`,
         `场景：${activePlan.scene}`,
         `人数：${activePlan.people}`,
         `时长：${activePlan.durationHours} 小时`,
         `预算：${activePlan.budget ?? '未指定'}`,
         `路线偏好：${activePlan.contentPreferences.join('、')}`,
-        `路线摘要：${activePlan.plan.summary}`,
+        `路线摘要：${displayedPlan.summary}`,
         '路线节点：',
         routeText,
-        `执行提醒：${activePlan.plan.tip}`,
+        `执行提醒：${displayedPlan.tip}`,
         '当用户后续提问时，默认认为他是在基于这条路线继续追问、解释或调整。',
       ].join('\n'),
     };
     const introMessage: ChatMsg = {
       role: 'ai',
       text: `这条路线我已经收到了。你可以直接基于它问我，比如想了解更多店铺信息或者看看哪里更值得停留。`,
-      route: activePlan.plan.steps.map((step, index) => `${index + 1}. ${step}`),
-      suggestions: activePlan.plan.suggestions.length > 0
-        ? activePlan.plan.suggestions
+      route: displayedPlan.steps.map((step, index) => `${index + 1}. ${step}`),
+      suggestions: displayedPlan.suggestions.length > 0
+        ? displayedPlan.suggestions
         : ['这条路线哪里最值得改', '第二步能换一下吗', '顺路吃什么更合适'],
     };
 
-    setPlanEditOpen(false);
-    setSelectedPlanStepIndex(null);
-    setPlanEditInput('');
-    setPlanEditNote(null);
-    setPlanEditScope('single');
+    resetPlanEditorState();
     setChatInput('');
     setChatStreaming('');
     setLoading(false);
     setFullChatHistory([hiddenContext, introMessage]);
     setChatReturnTarget('plan');
     setMode('chat');
+    trackInteraction({
+      eventType: 'open_plan_followup_chat',
+      targetType: 'plan',
+      payload: {
+        title: activePlan.title,
+        scene: activePlan.scene,
+        selected_variant_id: activePlan.selectedVariantId,
+        step_count: displayedPlan.steps.length,
+      },
+    });
     setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
   };
 
   const openEventChatQuestion = async (event: MallEvent, question: string) => {
+    pushNavigationSnapshot();
     const hiddenContext: ChatMsg = {
       role: 'user',
       hidden: true,
@@ -1045,6 +1579,16 @@ export default function App() {
     setChatInput('');
     setLoading(true);
     setChatStreaming('');
+    trackInteraction({
+      eventType: 'ask_event_question',
+      targetType: 'event',
+      targetId: event.id,
+      payload: {
+        title: event.title,
+        question,
+        status: getEventStatus(event),
+      },
+    });
 
     try {
       const res = await getChatResponseStructured(
@@ -1108,13 +1652,13 @@ export default function App() {
       });
     } catch (err) {
       console.error(err);
-      setPlanEditOpen(false);
-      setSelectedPlanStepIndex(null);
-      setPlanEditInput('');
-      setPlanEditLoading(false);
-      setPlanEditNote(null);
-      setPlanEditScope('single');
-      setRecentlyEditedPlanStepIndex(null);
+      resetPlanEditorState();
+      const localFallbackBundle = buildLocalPlanFallbackVariants({
+        scene: selectedScene.scene,
+        people: planPreferences.people,
+        durationHours: planPreferences.durationHours,
+        contentPreferences: planPreferences.contentPreferences,
+      });
       setActivePlan({
         title: '一键成行',
         subtitle: `${selectedScene.title} · ${planPreferences.people >= 5 ? '5+ 人' : `${planPreferences.people} 人`} · ${planPreferences.durationHours} 小时`,
@@ -1123,14 +1667,9 @@ export default function App() {
         durationHours: planPreferences.durationHours,
         budget,
         contentPreferences: planPreferences.contentPreferences,
-        plan: {
-          summary: '我先给你一条稳妥路线：先看一个重点活动，再顺路吃饭，最后留一点时间轻松逛。',
-          steps: ['先去 L1 看今天最值得去的活动', '按你的人数和节奏安排顺路用餐', '最后留一点时间逛 B1 或 B2 收尾'],
-          tip: '路线好不好，关键不在点位多，而在于节奏顺不顺。',
-          suggestions: ['我想再轻松一点', '顺路吃什么更合适', '帮我改成约会路线'],
-          action: 'dining',
-          actionLabel: '去看美食推荐',
-        },
+        summary: localFallbackBundle.summary,
+        planVariants: localFallbackBundle.feelVariants,
+        selectedVariantId: localFallbackBundle.defaultVariantId,
       });
       setMode('plan');
     } finally {
@@ -1140,12 +1679,29 @@ export default function App() {
 
   const handleHomeChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isVoiceTranscribing) return;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      setIsListening(false);
+      setIsVoiceTranscribing(true);
+      mediaRecorderRef.current.stop();
+      return;
+    }
     if (!chatInput.trim()) return;
     const msg = chatInput.trim();
     await openFreshChat(msg);
   };
 
-  const handleModeChange = (newMode: Mode) => {
+  const handleModeChange = (
+    newMode: Mode,
+    options?: { pushHistory?: boolean; clearHistory?: boolean }
+  ) => {
+    const shouldPushHistory = options?.pushHistory ?? mode !== newMode;
+    if (shouldPushHistory) {
+      pushNavigationSnapshot();
+    }
+    if (options?.clearHistory) {
+      setNavigationHistory([]);
+    }
     if (newMode !== 'style') {
       stopCamera();
       setStyleCameraOpen(false);
@@ -1157,6 +1713,9 @@ export default function App() {
     setResult(null);
     if (newMode === 'style') {
       setStyleAnalysisResult(null);
+    }
+    if (newMode === 'member' && mode !== 'member') {
+      setMemberSubPage('overview');
     }
     if (newMode === 'member' && !memberProfile) {
       setMemberLoading(true);
@@ -1207,17 +1766,17 @@ export default function App() {
 
   if (showSplash) {
     return (
-      <div className="relative min-h-screen overflow-hidden bg-[#F6F5FB] text-[#1A1A1A]">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(167,148,223,0.18),transparent_24%),radial-gradient(circle_at_16%_18%,rgba(220,211,245,0.34),transparent_28%),radial-gradient(circle_at_82%_72%,rgba(215,220,255,0.32),transparent_24%),radial-gradient(circle_at_76%_18%,rgba(209,231,255,0.18),transparent_18%),radial-gradient(circle_at_18%_82%,rgba(208,225,255,0.18),transparent_20%),linear-gradient(180deg,#FEFCFF_0%,#F7F4FB_48%,#F3EFF8_100%)]" />
+      <div className="relative min-h-screen overflow-hidden bg-[#F4F0FB] text-[#1A1A1A]">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(156,127,230,0.28),transparent_24%),radial-gradient(circle_at_16%_18%,rgba(216,200,248,0.42),transparent_28%),radial-gradient(circle_at_82%_72%,rgba(215,220,255,0.26),transparent_24%),radial-gradient(circle_at_76%_18%,rgba(209,231,255,0.16),transparent_18%),radial-gradient(circle_at_18%_82%,rgba(200,188,244,0.24),transparent_20%),linear-gradient(180deg,#FEFCFF_0%,#F4EEFC_48%,#EEE7F8_100%)]" />
         <motion.div
           aria-hidden="true"
-          className="pointer-events-none absolute left-[12%] top-[18%] h-24 w-24 rounded-full bg-[#D9CFF2]/70 blur-3xl sm:h-32 sm:w-32"
+          className="pointer-events-none absolute left-[12%] top-[18%] h-24 w-24 rounded-full bg-[#D2C0F7]/82 blur-3xl sm:h-32 sm:w-32"
           animate={{ y: [0, -16, 0], x: [0, 8, 0], scale: [1, 1.06, 1] }}
           transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
         />
         <motion.div
           aria-hidden="true"
-          className="pointer-events-none absolute right-[10%] top-[28%] h-28 w-28 rounded-full bg-[#D6CCE9]/66 blur-3xl sm:h-40 sm:w-40"
+          className="pointer-events-none absolute right-[10%] top-[28%] h-28 w-28 rounded-full bg-[#CDBAF4]/74 blur-3xl sm:h-40 sm:w-40"
           animate={{ y: [0, 14, 0], x: [0, -10, 0], scale: [1, 1.08, 1] }}
           transition={{ duration: 8.5, repeat: Infinity, ease: 'easeInOut' }}
         />
@@ -1296,20 +1855,20 @@ export default function App() {
                   <div className="absolute right-[14%] top-[18%] h-[10%] w-[8%] rounded-full bg-white/32 blur-[2px]" />
 
                   <motion.div
-                    className="absolute left-[30%] top-[25%] h-7 w-12 rounded-t-full border-[6px] border-b-0 border-[#3f245f] sm:h-10 sm:w-16 sm:border-[8px]"
+                    className="absolute left-[30%] top-[25%] h-7 w-12 rounded-t-full border-[6px] border-b-0 border-[#3f245f] sm:h-10 sm:w-16 sm:border-[8px] sm:border-b-0"
                     animate={{ x: eyeOffsetX, y: eyeOffsetY }}
                     transition={{ type: 'spring', stiffness: 220, damping: 22, mass: 0.35 }}
                   />
 
                   <motion.div
-                    className="absolute right-[18%] top-[25%] h-7 w-12 rounded-t-full border-[6px] border-b-0 border-[#3f245f] sm:h-10 sm:w-16 sm:border-[8px]"
+                    className="absolute right-[18%] top-[25%] h-7 w-12 rounded-t-full border-[6px] border-b-0 border-[#3f245f] sm:h-10 sm:w-16 sm:border-[8px] sm:border-b-0"
                     animate={{ x: eyeOffsetX, y: eyeOffsetY }}
                     transition={{ type: 'spring', stiffness: 220, damping: 22, mass: 0.35 }}
                   />
 
                   <div className="absolute left-[24%] top-[38%] h-6 w-11 rounded-full bg-[#e7cff8]/40 blur-[2px] sm:h-8 sm:w-16" />
                   <div className="absolute right-[12%] top-[38%] h-6 w-11 rounded-full bg-[#e7cff8]/40 blur-[2px] sm:h-8 sm:w-16" />
-                  <div className="absolute left-[56%] top-[43%] h-6 w-14 -translate-x-1/2 rounded-b-full border-[6px] border-t-0 border-[#3f245f] sm:h-8 sm:w-20 sm:border-[8px]" />
+                  <div className="absolute left-[56%] top-[43%] h-6 w-14 -translate-x-1/2 rounded-b-full border-[6px] border-t-0 border-[#3f245f] sm:h-8 sm:w-20 sm:border-[8px] sm:border-t-0" />
                 </motion.div>
 
                 <motion.div
@@ -1340,19 +1899,18 @@ export default function App() {
       className={cn(
         "min-h-screen text-[#1A1A1A] font-sans selection:bg-indigo-100 overflow-x-hidden",
         mode === 'home'
-          ? "bg-[linear-gradient(180deg,#FEFCFF_0%,#F7F4FB_46%,#F3EFF8_100%)]"
+          ? "bg-[linear-gradient(180deg,#FCFAFE_0%,#F5F0FB_22%,#EDEEF7_52%,#E8EEF5_100%)]"
           : "bg-[#F7F5F1]"
       )}
     >
       {/* Background Orbs */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute inset-0 opacity-[0.55] [background-image:linear-gradient(to_right,rgba(122,100,180,0.04)_1px,transparent_1px),linear-gradient(to_bottom,rgba(122,100,180,0.04)_1px,transparent_1px)] [background-size:28px_28px] sm:opacity-[0.32]" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.9),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.4),transparent_56%)]" />
-        <div className="absolute top-[-12%] left-[-10%] h-[44%] w-[48%] rounded-full bg-violet-200/40 blur-[150px]" />
-        <div className="absolute right-[-12%] top-[14%] h-[38%] w-[44%] rounded-full bg-sky-200/24 blur-[165px]" />
-        <div className="absolute bottom-[-12%] left-[8%] h-[34%] w-[42%] rounded-full bg-fuchsia-100/30 blur-[150px]" />
-        <div className="absolute bottom-[-16%] right-[-10%] h-[34%] w-[42%] rounded-full bg-amber-100/20 blur-[150px]" />
-        <div className="absolute left-1/2 top-[20%] h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(142,116,234,0.16),rgba(142,116,234,0.05)_45%,transparent_72%)] blur-3xl" />
+        <div className="absolute inset-0 opacity-[0.08] [background-image:linear-gradient(to_right,rgba(95,84,156,0.025)_1px,transparent_1px),linear-gradient(to_bottom,rgba(95,84,156,0.025)_1px,transparent_1px)] [background-size:40px_40px] sm:opacity-[0.05]" />
+        <div className="absolute inset-0 bg-[linear-gradient(155deg,rgba(251,248,254,0.975)_0%,rgba(244,239,251,0.955)_28%,rgba(236,238,248,0.935)_62%,rgba(232,238,246,0.915)_100%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_90%_8%,rgba(128,100,235,0.34),transparent_23%),radial-gradient(circle_at_100%_0%,rgba(171,209,255,0.22),transparent_27%),radial-gradient(circle_at_78%_24%,rgba(169,154,241,0.22),transparent_25%),radial-gradient(circle_at_62%_72%,rgba(255,255,255,0.2),transparent_24%)]" />
+        <div className="absolute right-[-8%] top-[-12%] h-[54rem] w-[54rem] rounded-full bg-[radial-gradient(circle,rgba(127,100,234,0.28),rgba(127,100,234,0.11)_38%,transparent_72%)] blur-[155px]" />
+        <div className="absolute right-[2%] top-[2%] h-[36rem] w-[44rem] rotate-[8deg] rounded-full bg-[radial-gradient(ellipse,rgba(170,208,255,0.16),rgba(170,208,255,0.06)_42%,transparent_72%)] blur-[120px]" />
+        <div className="absolute left-[-12%] bottom-[-18%] h-[28rem] w-[36rem] rounded-full bg-[radial-gradient(ellipse,rgba(202,208,242,0.16),rgba(202,208,242,0.05)_42%,transparent_74%)] blur-[120px]" />
       </div>
 
       {/* Header */}
@@ -1364,7 +1922,10 @@ export default function App() {
             : "bg-white/35 border-b border-white/30"
         )}
       >
-        <div className="flex items-center gap-4 cursor-pointer" onClick={() => handleModeChange('home')}>
+        <div
+          className="flex items-center gap-4 cursor-pointer"
+          onClick={() => handleModeChange('home', { pushHistory: false, clearHistory: true })}
+        >
           <div className="flex items-center gap-2.5 px-1 py-1.5">
             <img 
               src="/CFutureCity-logo.png" 
@@ -1381,22 +1942,18 @@ export default function App() {
         </div>
         {mode !== 'home' && (
           <button 
-            onClick={() => {
-              if (mode === 'chat' && chatReturnTarget) {
-                handleModeChange(chatReturnTarget);
-                return;
-              }
-              handleModeChange('home');
-            }}
+            onClick={handleGoBack}
             className={cn(
               "transition-colors border border-transparent hover:border-black/5",
-              mode === 'chat' && chatReturnLabel
+              navigationHistory.length > 0 || (mode === 'chat' && chatReturnLabel)
                 ? "inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[12px] font-semibold text-[#1A1A1A]/62 hover:bg-black/5"
                 : "p-2.5 hover:bg-black/5 rounded-full"
             )}
           >
-            <ChevronLeft size={mode === 'chat' && chatReturnLabel ? 16 : 22} className="text-[#1A1A1A]" />
-            {mode === 'chat' && chatReturnLabel && <span>{chatReturnLabel}</span>}
+            <ChevronLeft size={navigationHistory.length > 0 || (mode === 'chat' && chatReturnLabel) ? 16 : 22} className="text-[#1A1A1A]" />
+            {(navigationHistory.length > 0 || (mode === 'chat' && chatReturnLabel)) && (
+              <span>{navigationHistory.length > 0 ? '返回上一级' : chatReturnLabel}</span>
+            )}
           </button>
         )}
       </header>
@@ -1413,11 +1970,12 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="relative flex-1 flex items-center justify-center py-4 sm:py-10"
+              className="relative flex-1 flex flex-col pt-2 pb-7 sm:pt-6 sm:pb-8"
             >
-              <div className="pointer-events-none absolute inset-x-6 top-10 h-28 rounded-full bg-[radial-gradient(circle,rgba(121,94,206,0.14),rgba(255,255,255,0)_70%)] blur-3xl sm:inset-x-20" />
-              <div className="w-full max-w-3xl space-y-5 sm:space-y-8 -translate-y-10 sm:-translate-y-8">
-                <div className="relative space-y-3 text-center -translate-y-8 sm:-translate-y-10">
+              <div className="pointer-events-none absolute inset-x-6 top-10 h-28 rounded-full bg-[radial-gradient(circle,rgba(188,179,222,0.18),rgba(255,255,255,0)_72%)] blur-3xl sm:inset-x-20" />
+              <div className="flex flex-1 items-center justify-center">
+                <div className="w-full max-w-3xl">
+                  <div className="relative space-y-3 text-center">
                   <motion.p
                     initial={{ opacity: 0, y: -6 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -1426,14 +1984,14 @@ export default function App() {
                   >
                     Your Mall Day, Curated.
                   </motion.p>
-                  <div className="pointer-events-none absolute left-1/2 top-[56%] h-28 w-[15rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(132,110,229,0.22),rgba(132,110,229,0.07)_42%,rgba(255,255,255,0)_72%)] blur-2xl sm:h-36 sm:w-[24rem]" />
+                  <div className="pointer-events-none absolute left-1/2 top-[64%] h-28 w-[15rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(154,141,224,0.11),rgba(154,141,224,0.035)_42%,rgba(255,255,255,0)_74%)] blur-2xl sm:h-36 sm:w-[24rem]" />
                   <motion.h2
                     initial={{ opacity: 0, scale: 0.97 }}
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ delay: 0.08 }}
-                    className="relative text-[3.18rem] sm:text-[5.15rem] font-semibold tracking-[-0.032em] text-[#1A1A1A] leading-[0.95]"
+                    className="relative text-[3.18rem] sm:text-[5.15rem] tracking-[-0.04em] text-[#1A1A1A] leading-[0.95]"
                   >
-                    <span className="inline-block px-3 sm:px-5 font-serif bg-[linear-gradient(120deg,#252046_0%,#4B4CA8_32%,#757CE0_58%,#B6C4FA_92%)] bg-clip-text text-transparent drop-shadow-[0_18px_36px_rgba(75,76,168,0.14)]">
+                    <span className="inline-block px-3 sm:px-5 bg-[linear-gradient(118deg,#19152F_0%,#312C63_26%,#4B4FC0_56%,#7290F2_100%)] bg-clip-text text-transparent drop-shadow-[0_20px_42px_rgba(56,54,143,0.18)] [font-family:'Cormorant_Garamond',serif] text-[1.08em] font-semibold tracking-[-0.05em]">
                       Cadence
                     </span>
                   </motion.h2>
@@ -1445,25 +2003,24 @@ export default function App() {
                   >
                     <span className="h-px flex-1 bg-gradient-to-r from-transparent to-[#D4CBE7]/90" />
                     <span className="max-w-[14.5rem] text-center text-[11.5px] sm:max-w-[22rem] sm:text-[13px] font-medium leading-relaxed tracking-[0.02em] text-[#4B4560]/68 [font-family:'Noto_Serif_SC','Songti_SC','STSong',serif]">
-                    吃什么 · 逛哪里 · 找活动
-                    <br />
-                    Cadence 帮你想
+                      吃什么 · 逛哪里 · 找活动
+                      <br />
+                      Cadence 帮你想
                     </span>
                     <span className="h-px flex-1 bg-gradient-to-l from-transparent to-[#D4CBE7]/90" />
                   </motion.div>
                 </div>
+                </div>
+              </div>
 
-                <div className="relative overflow-hidden rounded-[2rem] sm:rounded-[2.4rem] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.62),rgba(255,255,255,0.42))] backdrop-blur-[28px] shadow-[0_28px_90px_rgba(74,57,126,0.08)] px-4 py-5 sm:px-6 sm:py-7">
-                  <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white to-transparent" />
-                  <div className="pointer-events-none absolute right-0 top-0 h-32 w-32 bg-[radial-gradient(circle,rgba(212,202,246,0.55),transparent_68%)] blur-2xl" />
-                  <div className="space-y-5 sm:space-y-6">
+              <div className="relative z-10 mx-auto flex w-full max-w-2xl flex-col gap-3 sm:gap-4">
                     {lastUserPrompt && (
                       <div className="flex justify-center">
                         <button
                           onClick={() => handleModeChange('chat')}
-                          className="inline-flex min-h-[44px] w-full max-w-md items-center justify-center gap-2.5 rounded-[1.15rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.84),rgba(255,255,255,0.72))] px-4 py-3 text-[13px] font-semibold text-[#2F2943]/70 shadow-[0_14px_28px_rgba(66,52,111,0.06)] transition-all duration-200 hover:bg-white/90 active:scale-95"
+                          className="inline-flex min-h-[44px] w-full max-w-md items-center justify-center gap-2.5 rounded-[1.15rem] border border-[#E6E0EF]/78 bg-[linear-gradient(180deg,rgba(245,241,250,0.82),rgba(236,232,245,0.58))] px-4 py-3 text-[13px] font-semibold text-[#2F2943]/66 shadow-[0_10px_24px_rgba(66,52,111,0.045)] backdrop-blur-[16px] transition-all duration-200 hover:bg-[linear-gradient(180deg,rgba(248,245,252,0.9),rgba(239,235,247,0.7))] active:scale-95"
                         >
-                          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600">
+                          <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#ECE6F8]/95 text-violet-600">
                             <Sparkles size={13} />
                           </span>
                           <span className="truncate max-w-[15rem] sm:max-w-[22rem]">继续上次对话 · {lastUserPrompt}</span>
@@ -1471,61 +2028,124 @@ export default function App() {
                       </div>
                     )}
 
-                    <form onSubmit={handleHomeChatSubmit} className="relative group">
-                      <div className="absolute -inset-1.5 rounded-[2.15rem] bg-[linear-gradient(135deg,rgba(188,170,245,0.26),rgba(255,255,255,0.12),rgba(196,223,255,0.22))] blur-xl opacity-70 transition duration-500 group-focus-within:opacity-100" />
-                      <div className="relative overflow-hidden rounded-[1.7rem] sm:rounded-[2rem] border border-white/95 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(255,255,255,0.9))] backdrop-blur-[24px] shadow-[0_20px_48px_rgba(65,49,109,0.07)]">
-                        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/90 to-transparent" />
-                        <div className="pointer-events-none absolute right-0 top-0 h-24 w-24 bg-[radial-gradient(circle,rgba(204,194,245,0.46),transparent_72%)] blur-2xl" />
-                        <input 
-                          type="text"
-                          placeholder="今天想怎么逛？"
-                          value={chatInput}
-                          onChange={(e) => setChatInput(e.target.value)}
-                          className="w-full bg-transparent rounded-[1.7rem] sm:rounded-[2rem] py-5 sm:py-6 pl-5 sm:pl-6 pr-16 sm:pr-20 focus:outline-none font-medium text-[#201C2F] text-[16px] sm:text-[20px] placeholder:text-[#2C244A]/24 text-left"
-                        />
-                        <button 
-                          disabled={loading || !chatInput.trim()}
-                          className="absolute bottom-3 right-3 flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-[1rem] bg-[linear-gradient(135deg,#4B3F84_0%,#7C66D9_55%,#A991E9_100%)] text-white shadow-[0_14px_30px_rgba(93,72,169,0.28)] transition-all duration-200 disabled:opacity-20 active:scale-95 sm:bottom-3.5 sm:right-3.5 sm:h-12 sm:w-12 sm:rounded-[1.15rem]"
-                        >
-                          {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
-                        </button>
+                    <form onSubmit={handleHomeChatSubmit} className="relative group order-2">
+                      <div className="absolute -inset-1.5 rounded-[2.15rem] bg-[linear-gradient(135deg,rgba(143,127,220,0.2),rgba(224,219,243,0.08),rgba(150,190,243,0.18))] blur-xl opacity-74 transition duration-500 group-focus-within:opacity-100" />
+                      <div className="relative overflow-hidden rounded-[1.7rem] sm:rounded-[2rem] border border-[rgba(229,223,244,0.88)] bg-[linear-gradient(145deg,rgba(240,235,249,0.7),rgba(229,223,241,0.58)_52%,rgba(224,232,246,0.54))] backdrop-blur-[28px] shadow-[0_20px_50px_rgba(58,46,99,0.09),inset_0_1px_0_rgba(255,255,255,0.46)]">
+                        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/78 to-transparent" />
+                        <div className="pointer-events-none absolute left-0 top-0 h-28 w-28 bg-[radial-gradient(circle,rgba(232,227,255,0.26),transparent_72%)] blur-2xl" />
+                        <div className="pointer-events-none absolute right-0 top-0 h-24 w-24 bg-[radial-gradient(circle,rgba(190,206,248,0.22),transparent_72%)] blur-2xl" />
+                        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.1),rgba(255,255,255,0.02)_28%,rgba(115,103,180,0.04)_72%,rgba(131,176,228,0.04)_100%)]" />
+                        <div className="px-4 pt-5 sm:px-5 sm:pt-6">
+                          <input
+                            type="text"
+                            placeholder={
+                              isListening
+                                ? VOICE_RECORDING_PLACEHOLDER
+                                : isVoiceTranscribing
+                                  ? VOICE_TRANSCRIBING_PLACEHOLDER
+                                  : "今天想怎么逛？"
+                            }
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            className="w-full min-w-0 bg-transparent pb-4 sm:pb-5 pr-2 focus:outline-none font-medium text-[#1F1A32] text-[16px] sm:text-[20px] placeholder:text-[#2F274A]/28"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between px-3 pb-3 sm:px-3.5 sm:pb-3.5">
+                          <div className="relative">
+                            <div className="pointer-events-none absolute inset-0 rounded-[1.1rem] bg-[linear-gradient(180deg,rgba(235,229,247,0.28),rgba(214,223,240,0.08))]" />
+                            <div className="relative flex items-center gap-1 rounded-[1.1rem] border border-[rgba(228,221,242,0.86)] bg-[linear-gradient(145deg,rgba(233,228,245,0.72),rgba(220,214,237,0.56)_56%,rgba(216,226,242,0.5))] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.4),0_10px_24px_rgba(73,58,122,0.06)] backdrop-blur-[18px]">
+                              <button
+                                type="button"
+                                onClick={() => setHomeActionsOpen((prev) => !prev)}
+                                aria-label={homeActionsOpen ? '收起快捷功能' : '展开快捷功能'}
+                                title={homeActionsOpen ? '收起快捷功能' : '展开快捷功能'}
+                                className={cn(
+                                  "group flex h-8 w-8 min-h-[32px] min-w-[32px] items-center justify-center rounded-[0.82rem] text-[#6C6688]/80 transition-all duration-200 active:scale-95 sm:h-9 sm:w-9 sm:rounded-[0.9rem]",
+                                  homeActionsOpen
+                                    ? "bg-[linear-gradient(180deg,rgba(249,246,253,0.84),rgba(230,222,245,0.78))] text-[#5647C8] shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_6px_14px_rgba(82,64,155,0.1)]"
+                                    : "hover:bg-[linear-gradient(180deg,rgba(243,238,251,0.72),rgba(226,218,240,0.56))] hover:text-[#4B3F84] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]"
+                                )}
+                              >
+                                <Sparkles size={13} className={cn("transition-transform duration-300", homeActionsOpen && "rotate-180 scale-110")} />
+                              </button>
+                              <div className="h-4 w-px bg-[rgba(214,208,233,0.94)]" />
+                              <button
+                                type="button"
+                                onClick={toggleVoiceInput}
+                                disabled={isVoiceTranscribing}
+                                aria-label="语音输入"
+                                title="语音输入"
+                                className={cn(
+                                  "relative flex h-8 w-8 min-h-[32px] min-w-[32px] items-center justify-center rounded-[0.82rem] text-[#6C6688]/80 transition-all duration-200 active:scale-95 sm:h-9 sm:w-9 sm:rounded-[0.9rem]",
+                                  isListening
+                                    ? "bg-[linear-gradient(180deg,#FF7A7A,#EF4444)] text-white shadow-[0_8px_16px_rgba(239,68,68,0.24)]"
+                                    : isVoiceTranscribing
+                                      ? "bg-[linear-gradient(180deg,rgba(246,241,253,0.82),rgba(229,221,245,0.72))] text-[#685C9D] shadow-[inset_0_1px_0_rgba(255,255,255,0.56),0_6px_12px_rgba(93,72,169,0.08)] cursor-wait"
+                                      : "hover:bg-[linear-gradient(180deg,rgba(243,238,251,0.72),rgba(226,218,240,0.56))] hover:text-[#4B3F84] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]"
+                                )}
+                              >
+                                {isListening && (
+                                  <span className="absolute inset-0 rounded-[0.82rem] sm:rounded-[0.9rem] animate-ping bg-red-400/28" />
+                                )}
+                                {isVoiceTranscribing ? <Loader2 size={14} className="animate-spin" /> : isListening ? <MicOff size={14} /> : <Mic size={14} />}
+                              </button>
+                            </div>
+                          </div>
+                          <button
+                            disabled={loading || isVoiceTranscribing || !chatInput.trim()}
+                            className="flex h-10 w-10 min-h-[40px] min-w-[40px] items-center justify-center rounded-[1rem] bg-[linear-gradient(135deg,#473B79_0%,#6F5DC2_52%,#8D79DA_100%)] text-white shadow-[0_14px_30px_rgba(84,66,150,0.3),inset_0_1px_0_rgba(255,255,255,0.18)] transition-all duration-200 disabled:opacity-20 active:scale-95 sm:h-11 sm:w-11 sm:rounded-[1.1rem]"
+                          >
+                            {loading ? <Loader2 size={17} className="animate-spin" /> : <Send size={17} />}
+                          </button>
+                        </div>
                       </div>
                     </form>
 
-                    <div className="flex flex-col items-center gap-3">
-                      <button
-                        onClick={() => setHomeActionsOpen((prev) => !prev)}
-                        className="inline-flex min-h-[44px] w-full max-w-md items-center justify-between rounded-[1.15rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.82),rgba(255,255,255,0.72))] px-4 py-3 text-[13px] font-semibold text-[#2F2943]/68 shadow-[0_14px_28px_rgba(66,52,111,0.06)] transition-all duration-200 hover:bg-white/90 active:scale-95"
-                      >
-                        <span className="flex items-center gap-2.5">
-                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-violet-600">
-                            <Sparkles size={13} />
-                          </span>
-                          功能
-                        </span>
-                        <ChevronRight
-                          size={15}
-                          className={cn(
-                            "transition-transform duration-200",
-                            homeActionsOpen && "rotate-90"
-                          )}
-                        />
-                      </button>
-
-                      <AnimatePresence initial={false}>
-                        {homeActionsOpen && (
-                          <motion.div
-                            initial={{ opacity: 0, y: -6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -6 }}
-                            className="flex w-full max-w-md flex-col gap-2.5"
-                          >
+                    <AnimatePresence initial={false}>
+                      {homeActionsOpen && (
+                        <motion.div
+                          initial={{ opacity: 0, scale: 0.95, y: 10, height: 0 }}
+                          animate={{ opacity: 1, scale: 1, y: 0, height: 'auto' }}
+                          exit={{ opacity: 0, scale: 0.95, y: 10, height: 0 }}
+                          className="order-1 flex justify-center w-full overflow-hidden"
+                        >
+                          <div className="relative flex items-center justify-between w-full max-w-[420px] sm:justify-center sm:gap-4 px-3 py-2 sm:p-2.5 my-1">
                             {[
-                              { label: '一键成行', icon: Zap, onClick: () => handleModeChange('plan') },
-                              { label: '今天看什么', icon: CalendarCheck, onClick: () => handleModeChange('events') },
-                              { label: '今日吃什么', icon: Utensils, onClick: () => handleModeChange('dining') },
-                              { label: '穿搭建议', icon: Shirt, onClick: () => handleModeChange('style') },
-                              { label: '会员中心', icon: Crown, onClick: () => handleModeChange('member') },
+                                {
+                                  label: '一键成行',
+                                  shortLabel: '成行',
+                                  icon: Zap,
+                                  iconClass: 'text-[#675FD3]',
+                                  onClick: () => handleModeChange('plan'),
+                                },
+                                {
+                                  label: '今天看什么',
+                                  shortLabel: '看什么',
+                                  icon: CalendarCheck,
+                                  iconClass: 'text-[#5E71CB]',
+                                  onClick: () => handleModeChange('events'),
+                                },
+                                {
+                                  label: '今日吃什么',
+                                  shortLabel: '吃什么',
+                                  icon: Utensils,
+                                  iconClass: 'text-[#8166C8]',
+                                  onClick: () => handleModeChange('dining'),
+                                },
+                                {
+                                  label: '穿搭建议',
+                                  shortLabel: '穿搭',
+                                  icon: Shirt,
+                                  iconClass: 'text-[#9266CF]',
+                                  onClick: () => handleModeChange('style'),
+                                },
+                                {
+                                  label: '会员中心',
+                                  shortLabel: '会员',
+                                  icon: Crown,
+                                  iconClass: 'text-[#7463D4]',
+                                  onClick: () => handleModeChange('member'),
+                                },
                             ].map((item) => {
                               const Icon = item.icon;
                               return (
@@ -1535,135 +2155,35 @@ export default function App() {
                                     setHomeActionsOpen(false);
                                     item.onClick();
                                   }}
-                                  className="inline-flex min-h-[44px] w-full items-center justify-between rounded-[1.15rem] border border-white/85 bg-[linear-gradient(180deg,rgba(255,255,255,0.82),rgba(255,255,255,0.7))] px-4 py-3 text-[13px] font-semibold text-[#2F2943]/64 shadow-[0_14px_28px_rgba(66,52,111,0.06)] transition-all duration-200 hover:bg-white/90 active:scale-95"
+                                  className="group relative flex flex-col sm:flex-row h-[68px] w-[62px] sm:h-14 sm:w-14 cursor-pointer items-center justify-center rounded-[1.2rem] sm:rounded-full transition-all duration-300 hover:bg-[linear-gradient(180deg,rgba(243,239,255,0.72),rgba(232,226,255,0.18))] hover:shadow-[0_8px_18px_rgba(100,80,180,0.08),inset_0_1px_0_rgba(255,255,255,0.52)] hover:backdrop-blur-md active:scale-[0.97]"
                                 >
-                                  <span className="flex items-center gap-2.5">
-                                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#F3EEFF] text-[#5A4F89]">
-                                      <Icon size={13} />
-                                    </span>
-                                    {item.label}
+                                  <span className={cn("relative z-10 transition-transform duration-300 sm:group-hover:-translate-y-1.5 sm:group-hover:scale-110", item.iconClass)}>
+                                    <Icon size={24} strokeWidth={2.2} className="sm:h-6 sm:w-6 sm:stroke-2 mb-1.5 sm:mb-0 drop-shadow-[0_2px_4px_rgba(0,0,0,0.04)]" />
                                   </span>
-                                  <ChevronRight size={14} className="text-[#1A1A1A]/22" />
+                                  
+                                  {/* Mobile Label */}
+                                  <span className="feature-card-label text-[11px] font-medium tracking-[0.02em] text-[#4B3F84]/62 sm:hidden leading-none transition-colors duration-300 group-hover:text-[#3E3274]">
+                                    {item.shortLabel}
+                                  </span>
+
+                                  {/* Desktop Hover Effects */}
+                                  <span className="pointer-events-none absolute bottom-1.5 left-1/2 -translate-x-1/2 opacity-0 transition-all duration-300 sm:group-hover:bottom-2 sm:group-hover:opacity-100 hidden sm:block">
+                                    <span className="block h-1 w-1 rounded-full bg-current opacity-40" />
+                                  </span>
+
+                                  <span className="pointer-events-none absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-[#2C244A] px-2 py-1 text-[11px] font-medium text-white opacity-0 shadow-lg transition-all duration-200 sm:group-hover:-bottom-9 sm:group-hover:opacity-100 hidden sm:block z-20">
+                                    {item.label}
+                                    <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-[#2C244A]" />
+                                  </span>
                                 </button>
                               );
                             })}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-
-                  </div>
-                </div>
-
-              </div>
-
-              <div className="absolute inset-x-0 bottom-3 flex justify-center">
-                <motion.p
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.12 }}
-                  className="text-center text-[11px] sm:text-[12px] uppercase tracking-[0.28em] font-semibold text-[#2A233E]/28"
-                >
-                  Personal Mall AI
-                </motion.p>
-              </div>
-            </motion.div>
-          )}
-
-          {mode === 'today' && (
-            <motion.div
-              key="today"
-              initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="space-y-4"
-            >
-              {todaySummary && (
-                <>
-                  <div className="space-y-1">
-                    <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">Today</p>
-                    <h3 className="text-2xl font-bold tracking-tight text-[#1A1A1A]">{todaySummary.headline}</h3>
-                    <p className="text-sm text-[#1A1A1A]/38 leading-relaxed">{todaySummary.subheadline}</p>
-                  </div>
-
-                  <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-4">
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 rounded-2xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
-                        <TrendingUp size={16} className="text-indigo-500" />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-sm font-bold text-[#1A1A1A]">今天的建议</p>
-                        <p className="text-[12px] text-[#1A1A1A]/55 leading-relaxed">{todaySummary.recommendedAction}</p>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      {todaySummary.statuses.map((item) => (
-                        <div
-                          key={item.label}
-                          className={cn("rounded-2xl border px-3 py-3", getTodayToneClasses(item.tone))}
-                        >
-                          <p className="text-[9px] font-bold uppercase tracking-[0.08em] opacity-55">{item.label}</p>
-                          <p className="text-[11px] font-semibold leading-snug mt-1">{item.value}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-3">
-                    <div className="bg-white rounded-2xl border border-black/8 p-4 shadow-sm">
-                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25 mb-2">此刻更适合</p>
-                      <p className="text-[13px] font-semibold text-[#1A1A1A] leading-relaxed">{todaySummary.rightNow}</p>
-                    </div>
-                    <div className="bg-white rounded-2xl border border-black/8 p-4 shadow-sm">
-                      <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-[#1A1A1A]/25 mb-2">现在先别急着做</p>
-                      <p className="text-[13px] font-semibold text-[#1A1A1A] leading-relaxed text-[#1A1A1A]/70">{todaySummary.avoidNow}</p>
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">今天适合谁来</p>
-                      <Users size={14} className="text-black/20" />
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {todaySummary.bestFor.map((item) => (
-                        <span
-                          key={item}
-                          className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-black/[0.03] text-[#1A1A1A]/55"
-                        >
-                          {item}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">从这里继续</p>
-                    <div className="space-y-2">
-                      {todaySummary.highlights.map((item) => (
-                        <button
-                          key={item.title}
-                          onClick={() => handleTodayHighlight(item)}
-                          className="w-full flex items-center gap-3 p-4 rounded-2xl bg-white border border-black/8 shadow-sm text-left active:scale-[0.98] transition-all"
-                        >
-                          <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
-                      <Sparkles size={14} className="text-indigo-500" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                            <p className="text-[13px] font-bold text-[#1A1A1A]">{item.title}</p>
-                            <p className="text-[11px] text-[#1A1A1A]/40 mt-0.5 leading-relaxed">{item.desc}</p>
-                    </div>
-                          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#1A1A1A]/40 flex-shrink-0">
-                            <span>{item.actionLabel}</span>
-                            <ChevronRight size={13} />
                           </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+              </div>
+
             </motion.div>
           )}
 
@@ -1799,7 +2319,7 @@ export default function App() {
             </motion.div>
           )}
 
-          {mode === 'plan' && activePlan && (
+          {mode === 'plan' && activePlan && displayedPlan && selectedPlanVariant && (
                 <motion.div
               key="plan-result"
               initial={{ opacity: 0, y: 20 }}
@@ -1811,6 +2331,7 @@ export default function App() {
                 <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">Plan</p>
                 <h3 className="text-2xl font-bold tracking-tight text-[#1A1A1A]">{activePlan.title}</h3>
                 <p className="text-sm text-[#1A1A1A]/38 leading-relaxed">{activePlan.subtitle}</p>
+                <p className="text-[12px] text-[#755CA9]/68 leading-relaxed">{activePlan.summary}</p>
               </div>
 
               <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-4">
@@ -1820,8 +2341,73 @@ export default function App() {
                   </div>
                   <div className="space-y-1">
                     <p className="text-sm font-bold text-[#1A1A1A]">今天的路线建议</p>
-                    <p className="text-[12px] text-[#1A1A1A]/55 leading-relaxed">{activePlan.plan.summary}</p>
+                    <p className="text-[12px] text-[#1A1A1A]/55 leading-relaxed">{selectedPlanVariant.fitReason}</p>
                   </div>
+                </div>
+
+                <div className="grid gap-2.5 sm:grid-cols-3">
+                  {activePlan.planVariants.map((variant) => {
+                    const isActive = variant.id === activePlan.selectedVariantId;
+                    return (
+                      <button
+                        key={variant.id}
+                        type="button"
+                        onClick={() => {
+                          setActivePlan((prev) => (
+                            prev
+                              ? {
+                                  ...prev,
+                                  selectedVariantId: variant.id,
+                                }
+                              : prev
+                          ));
+                          setSelectedPlanStepIndex(null);
+                          setPlanEditInput('');
+                          setPlanEditNote(null);
+                          setPlanEditScope('single');
+                          setRecentlyEditedPlanStepIndex(null);
+                          trackInteraction({
+                            eventType: 'switch_plan_variant',
+                            targetType: 'plan_variant',
+                            targetId: variant.id,
+                            payload: {
+                              label: variant.label,
+                              scene: activePlan.scene,
+                              step_count: variant.plan.steps.length,
+                            },
+                          });
+                        }}
+                        className={cn(
+                          "cursor-pointer rounded-[1.4rem] border p-3 text-left transition-all duration-200",
+                          isActive
+                            ? "border-[#C8B3E6] bg-[linear-gradient(180deg,rgba(244,237,252,0.96),rgba(236,227,249,0.88))] shadow-[0_14px_30px_rgba(117,92,169,0.14)]"
+                            : "border-black/8 bg-[#FAFAFC] hover:border-[#D8C8EB] hover:bg-white"
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[13px] font-bold text-[#1A1A1A]">{variant.label}</p>
+                            <p className="mt-1 text-[11px] text-[#1A1A1A]/50 leading-relaxed">{variant.subtitle}</p>
+                          </div>
+                          <span className={cn(
+                            "rounded-full px-2 py-1 text-[10px] font-bold",
+                            isActive ? "bg-white text-[#755CA9]" : "bg-black/[0.04] text-[#1A1A1A]/55"
+                          )}>
+                            {variant.plan.steps.length} 步
+                          </span>
+                        </div>
+                        <p className="mt-3 text-[12px] leading-relaxed text-[#1A1A1A]/65">{variant.plan.summary}</p>
+                        <p className="mt-2 text-[11px] leading-relaxed text-[#755CA9]/70">{variant.fitReason}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="rounded-2xl bg-[#F8F5FC] border border-[#ECE2F5] px-4 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#755CA9]/58">{selectedPlanVariant.label}</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#1A1A1A]">{selectedPlanVariant.subtitle}</p>
+                  <p className="mt-1 text-[12px] text-[#1A1A1A]/55 leading-relaxed">{displayedPlan.summary}</p>
+                  <p className="mt-2 text-[11px] text-[#755CA9]/68 leading-relaxed">{selectedPlanVariant.fitReason}</p>
                 </div>
 
                 <div className="rounded-2xl bg-black/[0.025] border border-black/5 overflow-hidden">
@@ -1834,7 +2420,7 @@ export default function App() {
                     </div>
                   </div>
                   <div className="px-4 py-2 space-y-0">
-                    {activePlan.plan.steps.map((step, i) => (
+                    {displayedPlan.steps.map((step, i) => (
                       <button
                         key={i}
                         type="button"
@@ -1874,7 +2460,7 @@ export default function App() {
 
                 <div className="flex items-start gap-2 px-3.5 py-3 rounded-2xl bg-amber-50 border border-amber-100">
                   <Quote size={13} className="text-amber-500 mt-0.5 flex-shrink-0" />
-                  <p className="text-[12px] text-amber-900/65 leading-relaxed">{activePlan.plan.tip}</p>
+                  <p className="text-[12px] text-amber-900/65 leading-relaxed">{displayedPlan.tip}</p>
                 </div>
 
                 <AnimatePresence initial={false}>
@@ -1899,7 +2485,7 @@ export default function App() {
                         </p>
                         {selectedPlanStepIndex !== null && (
                           <p className="text-[12px] leading-relaxed text-[#1A1A1A]/48">
-                            {activePlan.plan.steps[selectedPlanStepIndex]}
+                            {displayedPlan.steps[selectedPlanStepIndex]}
                           </p>
                         )}
                       </div>
@@ -1990,12 +2576,20 @@ export default function App() {
                 重新选条件
               </button>
 
-              {activePlan.plan.suggestions.length > 0 && (
+              {displayedPlan.suggestions.length > 0 && (
                 <div className="flex flex-wrap gap-2">
-                  {activePlan.plan.suggestions.map((suggestion) => (
+                  {displayedPlan.suggestions.map((suggestion) => (
                     <button
                       key={suggestion}
                       onClick={async () => {
+                        trackInteraction({
+                          eventType: 'click_chat_suggestion',
+                          targetType: 'suggestion',
+                          payload: {
+                            suggestion,
+                            source: 'plan_result',
+                          },
+                        });
                         await openFreshChat(suggestion, { returnTarget: 'plan' });
                       }}
                       className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-white border border-black/8 text-[#1A1A1A]/55 shadow-sm active:scale-95 transition-all"
@@ -2076,7 +2670,18 @@ export default function App() {
                         <motion.button
                           initial={{ opacity: 0, y: 4 }}
                           animate={{ opacity: 1, y: 0 }}
-                          onClick={() => handleModeChange(msg.action as Mode)}
+                          onClick={() => {
+                            trackInteraction({
+                              eventType: 'click_ai_action',
+                              targetType: 'action',
+                              targetId: msg.action,
+                              payload: {
+                                action: msg.action,
+                                action_label: msg.actionLabel ?? msg.action,
+                              },
+                            });
+                            handleModeChange(msg.action as Mode);
+                          }}
                           className="mt-2 flex items-center gap-1.5 px-3.5 py-2 bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-sm active:scale-95 transition-all"
                         >
                           <Sparkles size={12} />
@@ -2094,7 +2699,17 @@ export default function App() {
                           {msg.suggestions.map((s, si) => (
                             <button
                               key={si}
-                              onClick={() => sendChatMessage(s)}
+                              onClick={() => {
+                                trackInteraction({
+                                  eventType: 'click_chat_suggestion',
+                                  targetType: 'suggestion',
+                                  payload: {
+                                    suggestion: s,
+                                    source: 'chat_message',
+                                  },
+                                });
+                                void sendChatMessage(s);
+                              }}
                               className="text-[11px] font-medium px-3 py-1.5 rounded-full bg-white border border-black/10 text-[#1A1A1A]/60 hover:border-indigo-300 hover:text-indigo-600 transition-all shadow-sm active:scale-95"
                             >
                               {s}
@@ -2322,6 +2937,8 @@ export default function App() {
                 </form>
               ) : (
                 <div
+                  ref={restaurantsScrollRef}
+                  onScroll={handleRestaurantScroll}
                   className="fixed inset-x-0 overflow-y-auto snap-y snap-mandatory no-scrollbar bg-[#FAF9F6]"
                   style={{ top: '60px', bottom: '0' }}
                 >
@@ -2344,7 +2961,10 @@ export default function App() {
                         <div className="flex-1 flex justify-end">
                           {idx === (result as Restaurant[]).length - 1 && (
                             <button
-                              onClick={() => setResult(null)}
+                              onClick={() => {
+                                flushRestaurantRecommendationView('reset_results');
+                                setResult(null);
+                              }}
                               className="text-[11px] font-semibold text-black/25 hover:text-black/50 transition-colors active:scale-95"
                             >
                               重新搜索

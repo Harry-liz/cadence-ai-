@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cadence AI · 数据摄入</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Fira Sans', 'system-ui', 'sans-serif'], mono: ['Fira Code', 'monospace'] },
+          colors: {
+            brand:  { 50:'#EFF6FF', 100:'#DBEAFE', 200:'#BFDBFE', 300:'#93C5FD', 400:'#60A5FA', 500:'#3B82F6', 600:'#1E40AF', 700:'#1E3A8A', 800:'#1E2A5E', 900:'#0F172A' },
+            accent: { 400:'#FBBF24', 500:'#F59E0B', 600:'#D97706' },
+          },
+        },
+      },
+    }
+  </script>
+  <style>
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+    .drop-active { border-color: #3B82F6 !important; background: #EFF6FF !important; }
+    .drop-active .drop-ring { opacity: 1; }
+    .fade-up { animation: fadeUp 0.35s ease-out both; }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse-ring { 0% { transform: scale(0.9); opacity: 0.6; } 100% { transform: scale(1.3); opacity: 0; } }
+    .uploading-pulse::after { content:''; position:absolute; inset:0; border-radius:inherit; border:2px solid #3B82F6; animation: pulse-ring 1.5s ease-out infinite; }
+    .progress-bar { transition: width 0.4s ease; }
+    .entity-card { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+    .entity-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(30,64,175,0.08); }
+    .file-chip { transition: background 0.15s ease; }
+    .file-chip:hover { background: #DBEAFE; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-[#F8FAFC] min-h-screen font-sans text-brand-900">
+
+  <!-- Navbar -->
+  <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-200/60">
+    <div class="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center">
+          <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+        </div>
+        <span class="font-semibold text-brand-800 tracking-tight">Cadence AI</span>
+        <span class="text-gray-300 mx-1">/</span>
+        <span class="text-sm text-gray-500">数据摄入</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="historyBtn" onclick="toggleHistory()" class="cursor-pointer text-sm text-gray-500 hover:text-brand-600 px-3 py-1.5 rounded-lg hover:bg-brand-50 transition-colors duration-200 flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          历史记录
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="max-w-5xl mx-auto px-6 py-8">
+
+    <!-- Hero -->
+    <div class="mb-8">
+      <h1 class="text-2xl font-bold text-brand-900 tracking-tight">上传商场数据</h1>
+      <p class="text-gray-500 mt-1.5 text-sm leading-relaxed">拖拽或选择文件，AI 自动识别商户、活动、优惠信息并写入数据库</p>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- Left: Upload -->
+      <div class="lg:col-span-2 space-y-5">
+
+        <!-- Drop Zone -->
+        <div id="dropZone"
+             class="relative group border-2 border-dashed border-gray-300 rounded-2xl p-8 text-center cursor-pointer transition-all duration-200 bg-white hover:border-brand-400 hover:bg-brand-50/30"
+             onclick="document.getElementById('fileInput').click()">
+          <div class="drop-ring absolute inset-0 rounded-2xl border-2 border-brand-500 opacity-0 transition-opacity duration-200 pointer-events-none"></div>
+          <div class="mx-auto w-14 h-14 rounded-2xl bg-brand-50 group-hover:bg-brand-100 flex items-center justify-center mb-4 transition-colors duration-200">
+            <svg class="w-6 h-6 text-brand-500" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z"/>
+            </svg>
+          </div>
+          <p id="dropLabel" class="text-gray-700 font-medium">点击选择文件或拖拽到这里</p>
+          <p id="dropSub" class="text-gray-400 text-sm mt-1.5">支持 Excel / PDF / Word / 图片 / CSV / PPT</p>
+          <input id="fileInput" type="file" class="hidden" accept=".xlsx,.xls,.csv,.pdf,.docx,.doc,.pptx,.jpg,.jpeg,.png,.webp,.bmp,.txt">
+
+          <!-- File type chips -->
+          <div class="flex flex-wrap justify-center gap-2 mt-5">
+            <span class="file-chip inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 text-xs text-gray-500">
+              <svg class="w-3.5 h-3.5 text-green-500" viewBox="0 0 24 24" fill="currentColor"><path d="M14.17 1H4c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8.83c0-.53-.21-1.04-.59-1.41l-5.83-5.83c-.37-.38-.88-.59-1.41-.59zM8 18h3v-4h2v4h3l-4 4-4-4zm8-10V3.5L19.5 7H16z"/></svg>
+              Excel
+            </span>
+            <span class="file-chip inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 text-xs text-gray-500">
+              <svg class="w-3.5 h-3.5 text-red-500" viewBox="0 0 24 24" fill="currentColor"><path d="M14.17 1H4c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8.83c0-.53-.21-1.04-.59-1.41l-5.83-5.83c-.37-.38-.88-.59-1.41-.59zM16 17H8v-2h8v2zm0-4H8v-2h8v2zM16 7V3.5L19.5 7H16z"/></svg>
+              PDF
+            </span>
+            <span class="file-chip inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 text-xs text-gray-500">
+              <svg class="w-3.5 h-3.5 text-blue-500" viewBox="0 0 24 24" fill="currentColor"><path d="M14.17 1H4c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8.83c0-.53-.21-1.04-.59-1.41l-5.83-5.83c-.37-.38-.88-.59-1.41-.59zM8 15.01l2-2 2 2L14 13l2 2v2H8v-1.99zM16 7V3.5L19.5 7H16z"/></svg>
+              Word
+            </span>
+            <span class="file-chip inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 text-xs text-gray-500">
+              <svg class="w-3.5 h-3.5 text-purple-500" viewBox="0 0 24 24" fill="currentColor"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+              图片
+            </span>
+            <span class="file-chip inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 text-xs text-gray-500">
+              <svg class="w-3.5 h-3.5 text-gray-400" viewBox="0 0 24 24" fill="currentColor"><path d="M14.17 1H4c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8.83c0-.53-.21-1.04-.59-1.41l-5.83-5.83c-.37-.38-.88-.59-1.41-.59zM10 16l-4-4h3V8h2v4h3l-4 4zM16 7V3.5L19.5 7H16z"/></svg>
+              CSV
+            </span>
+          </div>
+        </div>
+
+        <!-- Options Row -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label for="sourceName" class="text-xs font-medium text-gray-500 uppercase tracking-wider block mb-1.5">来源备注</label>
+            <input id="sourceName" type="text" value="运营上传" placeholder="如：运营部3月数据"
+                   class="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-brand-900 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 transition-all duration-200">
+          </div>
+          <div>
+            <label for="hint" class="text-xs font-medium text-gray-500 uppercase tracking-wider block mb-1.5">内容提示 <span class="text-gray-300 normal-case">(可选)</span></label>
+            <input id="hint" type="text" placeholder="如：这是新入驻商户清单"
+                   class="w-full bg-white border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm text-brand-900 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400 transition-all duration-200">
+          </div>
+        </div>
+
+        <!-- Progress / Loading -->
+        <div id="progressArea" class="hidden fade-up">
+          <div class="bg-white rounded-2xl border border-gray-100 p-5">
+            <div class="flex items-center gap-3 mb-3">
+              <div class="relative w-10 h-10 rounded-xl bg-brand-50 flex items-center justify-center uploading-pulse">
+                <svg class="w-5 h-5 text-brand-500 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>
+              </div>
+              <div class="flex-1 min-w-0">
+                <p id="progressLabel" class="text-sm font-medium text-brand-800">正在上传文件...</p>
+                <p id="progressFile" class="text-xs text-gray-400 truncate mt-0.5"></p>
+              </div>
+              <span id="progressPct" class="text-xs font-mono text-brand-500 tabular-nums">0%</span>
+            </div>
+            <div class="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div id="progressBarInner" class="progress-bar h-full bg-gradient-to-r from-brand-500 to-brand-400 rounded-full" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Error -->
+        <div id="statusError" class="hidden fade-up">
+          <div class="bg-red-50 border border-red-100 rounded-2xl p-4 flex items-start gap-3">
+            <svg class="w-5 h-5 text-red-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+            <p id="errorText" class="text-sm text-red-700"></p>
+          </div>
+        </div>
+
+        <!-- Summary KPI Cards -->
+        <div id="summary" class="hidden fade-up">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="bg-white rounded-2xl p-4 border border-gray-100">
+              <div class="text-xs font-medium text-gray-400 uppercase tracking-wider">识别实体</div>
+              <div id="statTotal" class="text-2xl font-bold text-brand-900 mt-1 font-mono tabular-nums">0</div>
+            </div>
+            <div class="bg-white rounded-2xl p-4 border border-gray-100">
+              <div class="text-xs font-medium text-gray-400 uppercase tracking-wider">自动入库</div>
+              <div id="statApproved" class="text-2xl font-bold text-emerald-600 mt-1 font-mono tabular-nums">0</div>
+            </div>
+            <div class="bg-white rounded-2xl p-4 border border-gray-100">
+              <div class="text-xs font-medium text-gray-400 uppercase tracking-wider">待确认</div>
+              <div id="statPending" class="text-2xl font-bold text-amber-500 mt-1 font-mono tabular-nums">0</div>
+            </div>
+            <div class="bg-white rounded-2xl p-4 border border-gray-100">
+              <div class="text-xs font-medium text-gray-400 uppercase tracking-wider">文件类型</div>
+              <div id="statType" class="text-2xl font-bold text-brand-500 mt-1 font-mono">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Entity Results -->
+        <div id="entities" class="hidden space-y-3 fade-up">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-brand-800">提取结果</h2>
+            <span id="entityCount" class="text-xs text-gray-400 font-mono"></span>
+          </div>
+          <div id="entityList" class="space-y-2.5"></div>
+        </div>
+
+        <!-- Reset -->
+        <div id="resetArea" class="hidden text-center pt-2 fade-up">
+          <button onclick="resetPage()" class="cursor-pointer inline-flex items-center gap-2 text-sm font-medium text-brand-600 hover:text-brand-700 px-4 py-2 rounded-xl hover:bg-brand-50 transition-colors duration-200">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+            继续上传下一个文件
+          </button>
+        </div>
+      </div>
+
+      <!-- Right: Sidebar -->
+      <div class="space-y-5">
+        <!-- Quick Guide -->
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <h3 class="text-sm font-semibold text-brand-800 mb-3">使用指南</h3>
+          <div class="space-y-3">
+            <div class="flex gap-3">
+              <div class="w-6 h-6 rounded-lg bg-brand-50 flex items-center justify-center shrink-0 mt-0.5">
+                <span class="text-xs font-bold text-brand-600">1</span>
+              </div>
+              <div>
+                <p class="text-sm text-gray-700 font-medium">选择文件</p>
+                <p class="text-xs text-gray-400 mt-0.5">拖拽或点击上传区域</p>
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <div class="w-6 h-6 rounded-lg bg-brand-50 flex items-center justify-center shrink-0 mt-0.5">
+                <span class="text-xs font-bold text-brand-600">2</span>
+              </div>
+              <div>
+                <p class="text-sm text-gray-700 font-medium">AI 自动解析</p>
+                <p class="text-xs text-gray-400 mt-0.5">识别商户、活动、优惠等信息</p>
+              </div>
+            </div>
+            <div class="flex gap-3">
+              <div class="w-6 h-6 rounded-lg bg-brand-50 flex items-center justify-center shrink-0 mt-0.5">
+                <span class="text-xs font-bold text-brand-600">3</span>
+              </div>
+              <div>
+                <p class="text-sm text-gray-700 font-medium">确认并入库</p>
+                <p class="text-xs text-gray-400 mt-0.5">高置信度数据自动入库，低置信度可手动确认</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stats / History panel -->
+        <div id="historyPanel" class="bg-white rounded-2xl border border-gray-100 p-5 hidden">
+          <h3 class="text-sm font-semibold text-brand-800 mb-3">最近上传</h3>
+          <div id="historyList" class="space-y-2 text-sm">
+            <p class="text-xs text-gray-400">暂无记录</p>
+          </div>
+        </div>
+
+        <!-- Supported formats detail -->
+        <div class="bg-white rounded-2xl border border-gray-100 p-5">
+          <h3 class="text-sm font-semibold text-brand-800 mb-3">支持格式</h3>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-gray-600">Excel (.xlsx, .xls)</span>
+              <span class="text-emerald-500 font-medium">结构化解析</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-gray-600">CSV (.csv)</span>
+              <span class="text-emerald-500 font-medium">结构化解析</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-gray-600">PDF (.pdf)</span>
+              <span class="text-brand-500 font-medium">AI 识别</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-gray-600">Word (.docx)</span>
+              <span class="text-brand-500 font-medium">AI 识别</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-gray-600">图片 (JPG/PNG/WebP)</span>
+              <span class="text-purple-500 font-medium">多模态 AI</span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-gray-600">PPT (.pptx)</span>
+              <span class="text-brand-500 font-medium">AI 识别</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const history = JSON.parse(localStorage.getItem('cadence_history') || '[]');
+
+['dragenter','dragover'].forEach(e => {
+  dropZone.addEventListener(e, ev => { ev.preventDefault(); ev.stopPropagation(); dropZone.classList.add('drop-active'); });
+});
+['dragleave','drop'].forEach(e => {
+  dropZone.addEventListener(e, ev => { ev.preventDefault(); ev.stopPropagation(); dropZone.classList.remove('drop-active'); });
+});
+dropZone.addEventListener('drop', ev => { const f = ev.dataTransfer.files[0]; if (f) uploadFile(f); });
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+function toggleHistory() {
+  const panel = document.getElementById('historyPanel');
+  panel.classList.toggle('hidden');
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = document.getElementById('historyList');
+  if (history.length === 0) { list.innerHTML = '<p class="text-xs text-gray-400">暂无记录</p>'; return; }
+  list.innerHTML = history.slice(0, 10).map(h => `
+    <div class="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+      <div class="min-w-0 flex-1">
+        <p class="text-xs font-medium text-gray-700 truncate">${h.name}</p>
+        <p class="text-[10px] text-gray-400">${h.time}</p>
+      </div>
+      <span class="text-xs font-mono text-brand-500 ml-2">${h.count} 条</span>
+    </div>
+  `).join('');
+}
+
+async function uploadFile(file) {
+  hide('statusError');
+  hide('summary');
+  hide('entities');
+  hide('resetArea');
+  document.getElementById('entityList').innerHTML = '';
+
+  document.getElementById('dropLabel').textContent = file.name;
+  document.getElementById('dropSub').textContent = formatSize(file.size);
+  dropZone.style.pointerEvents = 'none';
+  dropZone.style.opacity = '0.6';
+
+  show('progressArea');
+  const pctEl = document.getElementById('progressPct');
+  const barEl = document.getElementById('progressBarInner');
+  const labelEl = document.getElementById('progressLabel');
+  document.getElementById('progressFile').textContent = file.name;
+  labelEl.textContent = '正在上传文件...';
+  pctEl.textContent = '0%';
+  barEl.style.width = '0%';
+
+  let fakePct = 0;
+  const fakeTimer = setInterval(() => {
+    fakePct = Math.min(fakePct + Math.random() * 8, 85);
+    pctEl.textContent = Math.round(fakePct) + '%';
+    barEl.style.width = fakePct + '%';
+    if (fakePct > 30) labelEl.textContent = '正在 AI 解析...';
+    if (fakePct > 60) labelEl.textContent = '正在写入数据库...';
+  }, 400);
+
+  const form = new FormData();
+  form.append('file', file);
+  form.append('mall_code', 'c_future_city');
+  form.append('source_name', document.getElementById('sourceName').value || 'file_upload');
+  form.append('hint', document.getElementById('hint').value || '');
+  form.append('auto_approve', 'true');
+
+  try {
+    const resp = await fetch('/api/ingest/upload', { method: 'POST', body: form });
+    const data = await resp.json();
+    clearInterval(fakeTimer);
+
+    if (!resp.ok) {
+      pctEl.textContent = '';
+      barEl.style.width = '0%';
+      hide('progressArea');
+      document.getElementById('errorText').textContent = data.detail || '上传失败，请重试';
+      show('statusError');
+      resetDrop();
+      show('resetArea');
+      return;
+    }
+
+    pctEl.textContent = '100%';
+    barEl.style.width = '100%';
+    labelEl.textContent = '解析完成';
+    setTimeout(() => hide('progressArea'), 600);
+
+    setTimeout(() => {
+      document.getElementById('statTotal').textContent = data.total_entities;
+      document.getElementById('statApproved').textContent = data.auto_approved;
+      document.getElementById('statPending').textContent = data.pending_review;
+      document.getElementById('statType').textContent = (data.file_type || '—').toUpperCase();
+      show('summary');
+
+      if (data.entities && data.entities.length > 0) {
+        renderEntities(data.entities);
+        show('entities');
+      }
+
+      if (data.errors && data.errors.length > 0) {
+        document.getElementById('errorText').textContent = '部分错误: ' + data.errors.join('; ');
+        show('statusError');
+      }
+
+      history.unshift({ name: file.name, count: data.total_entities, time: new Date().toLocaleString('zh-CN') });
+      if (history.length > 20) history.pop();
+      localStorage.setItem('cadence_history', JSON.stringify(history));
+
+      show('resetArea');
+      resetDrop();
+    }, 700);
+
+  } catch (err) {
+    clearInterval(fakeTimer);
+    hide('progressArea');
+    document.getElementById('errorText').textContent = '请求失败: ' + err.message;
+    show('statusError');
+    resetDrop();
+    show('resetArea');
+  }
+}
+
+function renderEntities(entities) {
+  const list = document.getElementById('entityList');
+  document.getElementById('entityCount').textContent = entities.length + ' 条记录';
+  list.innerHTML = '';
+
+  const typeLabels = { venue: '商户', event: '活动', offer: '优惠', knowledge: '知识' };
+  const typeStyles = {
+    venue:     'bg-blue-50 text-blue-700 border-blue-100',
+    event:     'bg-purple-50 text-purple-700 border-purple-100',
+    offer:     'bg-emerald-50 text-emerald-700 border-emerald-100',
+    knowledge: 'bg-gray-50 text-gray-600 border-gray-100',
+  };
+  const statusLabels = { approved: '已入库', pending_review: '待确认' };
+  const statusStyles = { approved: 'bg-emerald-50 text-emerald-600', pending_review: 'bg-amber-50 text-amber-600' };
+
+  const fieldLabels = {
+    venue_type: '类型', category: '品类', floor_code: '楼层', location_code: '铺位',
+    budget_text: '人均', description: '简介', open_hours: '营业时间', rating: '评分',
+    event_type: '活动类型', price_text: '价格', venue_name: '关联商户', content: '内容',
+  };
+
+  entities.forEach((e, i) => {
+    const card = document.createElement('div');
+    card.className = 'entity-card bg-white border border-gray-100 rounded-xl p-4 fade-up';
+    card.style.animationDelay = `${i * 0.04}s`;
+
+    const name = e.data.name || e.data.title || '未命名';
+    const tStyle = typeStyles[e.entity_type] || typeStyles.knowledge;
+    const tLabel = typeLabels[e.entity_type] || e.entity_type;
+    const sStyle = statusStyles[e.status] || '';
+    const sLabel = statusLabels[e.status] || e.status;
+    const confColor = e.confidence >= 0.8 ? 'text-emerald-500' : e.confidence >= 0.5 ? 'text-amber-500' : 'text-red-400';
+
+    let detailsHtml = '';
+    for (const [key, label] of Object.entries(fieldLabels)) {
+      if (e.data[key]) {
+        const val = String(e.data[key]);
+        const display = val.length > 60 ? val.substring(0, 60) + '...' : val;
+        detailsHtml += `
+          <div class="flex items-baseline gap-2 py-0.5">
+            <span class="text-[11px] text-gray-400 w-14 shrink-0 text-right">${label}</span>
+            <span class="text-xs text-gray-700">${display}</span>
+          </div>`;
+      }
+    }
+
+    const warningsHtml = e.warnings && e.warnings.length > 0
+      ? `<div class="mt-2 flex items-start gap-1.5 text-xs text-amber-600 bg-amber-50 rounded-lg px-2.5 py-1.5">
+           <svg class="w-3.5 h-3.5 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+           <span>${e.warnings.join(' / ')}</span>
+         </div>` : '';
+
+    card.innerHTML = `
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap mb-1">
+            <span class="font-semibold text-brand-900 text-sm">${name}</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded border font-medium ${tStyle}">${tLabel}</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded font-medium ${sStyle}">${sLabel}</span>
+          </div>
+          <div class="ml-0">${detailsHtml}</div>
+          ${warningsHtml}
+        </div>
+        <div class="flex flex-col items-end gap-1">
+          <span class="text-xs font-mono font-semibold ${confColor} tabular-nums">${Math.round(e.confidence * 100)}%</span>
+          ${e.source_row != null ? `<span class="text-[10px] text-gray-300">行 ${e.source_row}</span>` : ''}
+        </div>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function resetDrop() {
+  dropZone.style.pointerEvents = '';
+  dropZone.style.opacity = '';
+  document.getElementById('dropLabel').textContent = '点击选择文件或拖拽到这里';
+  document.getElementById('dropSub').textContent = '支持 Excel / PDF / Word / 图片 / CSV / PPT';
+  fileInput.value = '';
+}
+
+function resetPage() {
+  hide('progressArea');
+  hide('statusError');
+  hide('summary');
+  hide('entities');
+  hide('resetArea');
+  document.getElementById('entityList').innerHTML = '';
+  resetDrop();
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+</script>
+
+</body>
+</html>
