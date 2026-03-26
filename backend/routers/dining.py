@@ -48,6 +48,34 @@ class DiningResponse(BaseModel):
     session_id: str | None = None
 
 
+MEAL_KEYWORDS = (
+    "寿司", "日料", "拉面", "火锅", "烤肉", "烧肉", "牛排", "中餐", "正餐", "自助",
+    "米饭", "盖饭", "面馆", "小龙虾", "海鲜", "烧烤", "粤菜", "湘菜", "川菜", "bistro",
+)
+LIGHT_KEYWORDS = (
+    "咖啡", "奶茶", "茶饮", "甜品", "甜点", "蛋糕", "轻食", "下午茶", "面包", "烘焙", "果汁",
+)
+
+
+def normalize_dining_category(item: dict) -> str:
+    text_parts = [
+        str(item.get("name", "")),
+        str(item.get("reason", "")),
+        str(item.get("budget", "")),
+        " ".join(str(dish) for dish in item.get("dishes", []) if dish),
+    ]
+    combined = " ".join(part.lower() for part in text_parts if part).strip()
+    raw_category = str(item.get("category", "")).strip().lower()
+
+    if any(keyword.lower() in combined for keyword in MEAL_KEYWORDS):
+        return "meal"
+    if any(keyword.lower() in combined for keyword in LIGHT_KEYWORDS):
+        return "light"
+    if raw_category in {"meal", "light"}:
+        return raw_category
+    return "meal"
+
+
 @router.post("/recommend", response_model=DiningResponse)
 async def recommend(req: DiningRequest, db: Session = Depends(get_db)):
     tracking = ensure_tracking_context(
@@ -98,7 +126,12 @@ async def recommend(req: DiningRequest, db: Session = Depends(get_db)):
         parsed = json.loads(text)
         results = parsed if isinstance(parsed, list) else parsed.get("results", [])
         normalized = [
-            {**r, "rating": str(r.get("rating", "")), "budget": str(r.get("budget", ""))}
+            {
+                **r,
+                "category": normalize_dining_category(r),
+                "rating": str(r.get("rating", "")),
+                "budget": str(r.get("budget", "")),
+            }
             for r in results
         ]
         response = DiningResponse(

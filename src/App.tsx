@@ -170,6 +170,7 @@ async function convertAudioBlobToWavBase64(blob: Blob) {
 type Mode = 'home' | 'plan' | 'chat' | 'dining' | 'style' | 'events' | 'member'; // 'parking' 已停用
 
 type MemberSubPage = 'overview' | 'coupons' | 'transactions' | 'points';
+type PlanStage = 'builder' | 'variants' | 'detail';
 
 interface ChatMsg {
   role: 'user' | 'ai';
@@ -200,6 +201,7 @@ interface NavigationSnapshot {
   mode: Mode;
   result: string | Restaurant[] | null;
   activePlan: ActivePlan | null;
+  planStage: PlanStage;
   selectedEvent: MallEvent | null;
   chatReturnTarget: Mode | null;
   styleCameraOpen: boolean;
@@ -675,6 +677,7 @@ export default function App() {
   const [navigationHistory, setNavigationHistory] = useState<NavigationSnapshot[]>([]);
   const [quickPlanLoadingId, setQuickPlanLoadingId] = useState<string | null>(null);
   const [activePlan, setActivePlan] = useState<ActivePlan | null>(null);
+  const [planStage, setPlanStage] = useState<PlanStage>('builder');
   const [planEditOpen, setPlanEditOpen] = useState(false);
   const [selectedPlanStepIndex, setSelectedPlanStepIndex] = useState<number | null>(null);
   const [planEditInput, setPlanEditInput] = useState('');
@@ -959,6 +962,7 @@ export default function App() {
     mode,
     result,
     activePlan,
+    planStage,
     selectedEvent,
     chatReturnTarget,
     styleCameraOpen,
@@ -976,6 +980,7 @@ export default function App() {
     mode,
     result,
     activePlan,
+    planStage,
     selectedEvent,
     chatReturnTarget,
     styleCameraOpen,
@@ -1004,6 +1009,7 @@ export default function App() {
     setMode(snapshot.mode);
     setResult(snapshot.result);
     setActivePlan(snapshot.activePlan);
+    setPlanStage(snapshot.planStage);
     setSelectedEvent(snapshot.selectedEvent);
     setChatReturnTarget(snapshot.chatReturnTarget);
     setStyleCameraOpen(snapshot.styleCameraOpen);
@@ -1023,11 +1029,18 @@ export default function App() {
   }, [stopCamera]);
 
   const handleGoBack = useCallback(() => {
+    if (mode === 'plan' && activePlan && planStage === 'detail') {
+      resetPlanEditorState();
+      setPlanStage('variants');
+      return;
+    }
+
     if (navigationHistory.length === 0) {
       stopCamera();
       setStyleCameraOpen(false);
       setChatReturnTarget(null);
       setSelectedEvent(null);
+      setPlanStage('builder');
       setNavigationHistory([]);
       setMode('home');
       setResult(null);
@@ -1037,7 +1050,7 @@ export default function App() {
     const previousSnapshot = navigationHistory[navigationHistory.length - 1];
     setNavigationHistory((prev) => prev.slice(0, -1));
     restoreNavigationSnapshot(previousSnapshot);
-  }, [navigationHistory, restoreNavigationSnapshot, stopCamera]);
+  }, [activePlan, mode, navigationHistory, planStage, resetPlanEditorState, restoreNavigationSnapshot, stopCamera]);
 
   const handleCapture = async () => {
     if (!videoRef.current || !canvasRef.current) return;
@@ -1341,6 +1354,7 @@ export default function App() {
       planVariants: planBundle.feelVariants,
       selectedVariantId: planBundle.defaultVariantId,
     });
+    setPlanStage('variants');
     setMode('plan');
     trackInteraction({
       eventType: 'generate_plan',
@@ -1363,6 +1377,7 @@ export default function App() {
     pushNavigationSnapshot();
     resetPlanEditorState();
     setActivePlan(null);
+    setPlanStage('builder');
     if (overrides) {
       setPlanPreferences((prev) => ({ ...prev, ...overrides }));
     }
@@ -1426,6 +1441,7 @@ export default function App() {
         planVariants: localFallbackBundle.feelVariants,
         selectedVariantId: localFallbackBundle.defaultVariantId,
       });
+      setPlanStage('variants');
       setMode('plan');
     } finally {
       setQuickPlanLoadingId(null);
@@ -1438,6 +1454,37 @@ export default function App() {
     setMode('chat');
     await sendChatMessage(msg, { resetHistory: true });
   };
+
+  const openPlanVariantDetail = useCallback((variantId: string) => {
+    if (!activePlan) return;
+    const variant = activePlan.planVariants.find((item) => item.id === variantId);
+    if (!variant) return;
+
+    setActivePlan((prev) => (
+      prev
+        ? {
+            ...prev,
+            selectedVariantId: variantId,
+          }
+        : prev
+    ));
+    setPlanStage('detail');
+    setSelectedPlanStepIndex(null);
+    setPlanEditInput('');
+    setPlanEditNote(null);
+    setPlanEditScope('single');
+    setRecentlyEditedPlanStepIndex(null);
+    trackInteraction({
+      eventType: 'switch_plan_variant',
+      targetType: 'plan_variant',
+      targetId: variant.id,
+      payload: {
+        label: variant.label,
+        scene: activePlan.scene,
+        step_count: variant.plan.steps.length,
+      },
+    });
+  }, [activePlan]);
 
   const handlePlanStepEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1916,7 +1963,8 @@ export default function App() {
       {/* Header */}
       <header
         className={cn(
-          "sticky top-0 z-50 px-6 py-3 flex items-center justify-between backdrop-blur-2xl",
+          "px-6 py-3 flex items-center justify-between backdrop-blur-2xl",
+          mode === 'chat' ? "fixed inset-x-0 top-0 z-50" : "sticky top-0 z-50",
           mode === 'home'
             ? "bg-white/18 border-b border-white/20"
             : "bg-white/35 border-b border-white/30"
@@ -2319,7 +2367,83 @@ export default function App() {
             </motion.div>
           )}
 
-          {mode === 'plan' && activePlan && displayedPlan && selectedPlanVariant && (
+          {mode === 'plan' && activePlan && selectedPlanVariant && planStage === 'variants' && (
+            <motion.div
+              key="plan-variants"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-4"
+            >
+              <div className="space-y-1">
+                <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/25">Plan</p>
+                <h3 className="text-2xl font-bold tracking-tight text-[#1A1A1A]">{activePlan.title}</h3>
+                <p className="text-sm text-[#1A1A1A]/38 leading-relaxed">{activePlan.subtitle}</p>
+                <p className="text-[12px] text-[#755CA9]/68 leading-relaxed">{activePlan.summary}</p>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-black/8 p-4 shadow-sm space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-[#ECE0F8] flex items-center justify-center flex-shrink-0">
+                    <Sparkles size={16} className="text-[#755CA9]" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-[#1A1A1A]">先选一条你今天想走的路线</p>
+                    <p className="text-[12px] text-[#1A1A1A]/55 leading-relaxed">进入下一页后再看完整时间线和逐步调整，避免三条路线都堆在一个页面里。</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-2.5">
+                  {activePlan.planVariants.map((variant) => {
+                    const isDefault = variant.id === activePlan.selectedVariantId;
+                    return (
+                      <button
+                        key={variant.id}
+                        type="button"
+                        onClick={() => openPlanVariantDetail(variant.id)}
+                        className={cn(
+                          "cursor-pointer rounded-[1.5rem] border p-4 text-left transition-all duration-200 active:scale-[0.99]",
+                          isDefault
+                            ? "border-[#C8B3E6] bg-[linear-gradient(180deg,rgba(244,237,252,0.96),rgba(236,227,249,0.88))] shadow-[0_14px_30px_rgba(117,92,169,0.14)]"
+                            : "border-black/8 bg-[#FAFAFC] hover:border-[#D8C8EB] hover:bg-white"
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <p className="text-[17px] font-bold tracking-tight text-[#1A1A1A] sm:text-[18px]">{variant.label}</p>
+                              {isDefault && (
+                                <span className="rounded-full bg-white/80 px-2 py-1 text-[10px] font-bold text-[#755CA9]">
+                                  默认推荐
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[12px] font-medium text-[#1A1A1A]/52 leading-relaxed">{variant.subtitle}</p>
+                          </div>
+                          <span className="rounded-full bg-black/[0.04] px-2 py-1 text-[10px] font-bold text-[#1A1A1A]/55">
+                            {variant.plan.steps.length} 步
+                          </span>
+                        </div>
+                        <div className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-[#5E4CB0]">
+                          查看这条路线
+                          <ChevronRight size={13} />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <button
+                onClick={() => openPlanBuilder()}
+                className="w-full px-4 py-3 rounded-2xl bg-white border border-black/8 text-[#1A1A1A]/60 text-sm font-semibold shadow-sm active:scale-[0.98] transition-all"
+              >
+                重新选条件
+              </button>
+            </motion.div>
+          )}
+
+          {mode === 'plan' && activePlan && displayedPlan && selectedPlanVariant && planStage === 'detail' && (
                 <motion.div
               key="plan-result"
               initial={{ opacity: 0, y: 20 }}
@@ -2345,67 +2469,24 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid gap-2.5 sm:grid-cols-3">
-                  {activePlan.planVariants.map((variant) => {
-                    const isActive = variant.id === activePlan.selectedVariantId;
-                    return (
-                      <button
-                        key={variant.id}
-                        type="button"
-                        onClick={() => {
-                          setActivePlan((prev) => (
-                            prev
-                              ? {
-                                  ...prev,
-                                  selectedVariantId: variant.id,
-                                }
-                              : prev
-                          ));
-                          setSelectedPlanStepIndex(null);
-                          setPlanEditInput('');
-                          setPlanEditNote(null);
-                          setPlanEditScope('single');
-                          setRecentlyEditedPlanStepIndex(null);
-                          trackInteraction({
-                            eventType: 'switch_plan_variant',
-                            targetType: 'plan_variant',
-                            targetId: variant.id,
-                            payload: {
-                              label: variant.label,
-                              scene: activePlan.scene,
-                              step_count: variant.plan.steps.length,
-                            },
-                          });
-                        }}
-                        className={cn(
-                          "cursor-pointer rounded-[1.4rem] border p-3 text-left transition-all duration-200",
-                          isActive
-                            ? "border-[#C8B3E6] bg-[linear-gradient(180deg,rgba(244,237,252,0.96),rgba(236,227,249,0.88))] shadow-[0_14px_30px_rgba(117,92,169,0.14)]"
-                            : "border-black/8 bg-[#FAFAFC] hover:border-[#D8C8EB] hover:bg-white"
-                        )}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-[13px] font-bold text-[#1A1A1A]">{variant.label}</p>
-                            <p className="mt-1 text-[11px] text-[#1A1A1A]/50 leading-relaxed">{variant.subtitle}</p>
-                          </div>
-                          <span className={cn(
-                            "rounded-full px-2 py-1 text-[10px] font-bold",
-                            isActive ? "bg-white text-[#755CA9]" : "bg-black/[0.04] text-[#1A1A1A]/55"
-                          )}>
-                            {variant.plan.steps.length} 步
-                          </span>
-                        </div>
-                        <p className="mt-3 text-[12px] leading-relaxed text-[#1A1A1A]/65">{variant.plan.summary}</p>
-                        <p className="mt-2 text-[11px] leading-relaxed text-[#755CA9]/70">{variant.fitReason}</p>
-                      </button>
-                    );
-                  })}
-                </div>
-
                 <div className="rounded-2xl bg-[#F8F5FC] border border-[#ECE2F5] px-4 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#755CA9]/58">{selectedPlanVariant.label}</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#1A1A1A]">{selectedPlanVariant.subtitle}</p>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[12px] font-bold uppercase tracking-[0.14em] text-[#755CA9]/62">{selectedPlanVariant.label}</p>
+                      <p className="mt-1 text-[13px] font-semibold text-[#1A1A1A]">{selectedPlanVariant.subtitle}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlanStage('variants');
+                        resetPlanEditorState();
+                      }}
+                      className="inline-flex items-center gap-1 rounded-full border border-[#E3D8EF] bg-white/78 px-3 py-1.5 text-[11px] font-semibold text-[#6C5B95] transition-all active:scale-95"
+                    >
+                      <ChevronLeft size={12} />
+                      其他路线
+                    </button>
+                  </div>
                   <p className="mt-1 text-[12px] text-[#1A1A1A]/55 leading-relaxed">{displayedPlan.summary}</p>
                   <p className="mt-2 text-[11px] text-[#755CA9]/68 leading-relaxed">{selectedPlanVariant.fitReason}</p>
                 </div>
